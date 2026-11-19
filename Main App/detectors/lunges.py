@@ -1,6 +1,6 @@
 import time
 from core.base_exercise import BaseExercise
-from core.rep_state_machine import RepetitionStateMachine, Direction
+from core.rep_state_machine import RepetitionStateMachine, Direction, Stage
 from services.config.workout_config import DETECTOR_CONFIG
 
 
@@ -29,36 +29,78 @@ class LungesDetector(BaseExercise):
         self.balance_tolerance = cfg.get("balance_tolerance", 0.10)
         self._active_front_leg = None
 
+        # Per-rep tracking
+        self._rep_start_time = 0.0
+        self._min_knee_angle_in_rep = 180.0
+        self._max_lateral_offset_in_rep = 0.0
+        self._knee_past_toes_in_rep = False
+
     def reset(self) -> None:
         self.state_machine.reset()
         self.reps = 0
+        self.valid_reps = 0
+        self.invalid_reps = 0
         self.stage = None
         self._active_front_leg = None
+        self._rep_start_time = 0.0
+        self._min_knee_angle_in_rep = 180.0
+        self._max_lateral_offset_in_rep = 0.0
+        self._knee_past_toes_in_rep = False
+        self.form_status = "Good"
+        self.form_issue = "None - Form is clean"
+        self.form_correction = "Maintain this form!"
 
     def process(self, landmarks, current_time=None) -> dict:
         if current_time is None:
             current_time = time.time()
 
+        left_visible = self.are_visible(landmarks, [self.LEFT_HIP, self.LEFT_KNEE, self.LEFT_ANKLE], min_vis=self.min_visibility)
+        right_visible = self.are_visible(landmarks, [self.RIGHT_HIP, self.RIGHT_KNEE, self.RIGHT_ANKLE], min_vis=self.min_visibility)
+
+        if not left_visible and not right_visible:
+            self.form_status = "Unable to Assess"
+            self.form_issue = "Leg landmarks occluded or outside camera view"
+            self.form_correction = "Adjust camera so your front and back legs are clearly visible."
+            return {
+                "reps": self.valid_reps,
+                "valid_reps": self.valid_reps,
+                "invalid_reps": self.invalid_reps,
+                "rep_incremented": False,
+                "rep_invalid": False,
+                "front_knee_angle": 0,
+                "torso_angle": 180,
+                "balance_status": "BALANCED",
+                "form_status": self.form_status,
+                "form_issue": self.form_issue,
+                "form_correction": self.form_correction,
+                "posture_feedback": self.form_issue,
+            }
+
         left_knee_angle = self.calculate_angle(
             self.get_point(landmarks, self.LEFT_HIP),
             self.get_point(landmarks, self.LEFT_KNEE),
             self.get_point(landmarks, self.LEFT_ANKLE),
-        )
+        ) if left_visible else 180.0
 
         right_knee_angle = self.calculate_angle(
             self.get_point(landmarks, self.RIGHT_HIP),
             self.get_point(landmarks, self.RIGHT_KNEE),
             self.get_point(landmarks, self.RIGHT_ANKLE),
-        )
+        ) if right_visible else 180.0
 
         # Stable front leg selection with hysteresis
-        if self._active_front_leg is None:
-            self._active_front_leg = "left" if left_knee_angle <= right_knee_angle else "right"
-        else:
-            if self._active_front_leg == "left" and right_knee_angle < (left_knee_angle - 15.0):
-                self._active_front_leg = "right"
-            elif self._active_front_leg == "right" and left_knee_angle < (right_knee_angle - 15.0):
-                self._active_front_leg = "left"
+        if left_visible and right_visible:
+            if self._active_front_leg is None:
+                self._active_front_leg = "left" if left_knee_angle <= right_knee_angle else "right"
+            else:
+                if self._active_front_leg == "left" and right_knee_angle < (left_knee_angle - 15.0):
+                    self._active_front_leg = "right"
+                elif self._active_front_leg == "right" and left_knee_angle < (right_knee_angle - 15.0):
+                    self._active_front_leg = "left"
+        elif left_visible:
+            self._active_front_leg = "left"
+        elif right_visible:
+            self._active_front_leg = "right"
 
         if self._active_front_leg == "left":
             front_knee_angle = left_knee_angle
@@ -73,16 +115,6 @@ class LungesDetector(BaseExercise):
             front_ankle_idx = self.RIGHT_ANKLE
             shoulder_idx_for_torso = self.RIGHT_SHOULDER
 
-        key_landmarks_visible = self.are_visible(
-            landmarks, [front_hip_idx, front_knee_idx, front_ankle_idx], min_vis=self.min_visibility
-        )
-
-        rep_incremented = False
-        if key_landmarks_visible:
-            rep_incremented = self.state_machine.update(front_knee_angle, current_time)
-            self.reps = self.state_machine.reps
-            self.stage = self.state_machine.stage_name
-
         torso_angle = 180.0
         if self.are_visible(landmarks, [shoulder_idx_for_torso, front_hip_idx, front_knee_idx], min_vis=self.min_visibility):
             torso_angle = self.calculate_angle(
@@ -92,7 +124,9 @@ class LungesDetector(BaseExercise):
             )
 
         balance_status = "BALANCED"
-        if self.are_visible(landmarks, [self.LEFT_SHOULDER, self.RIGHT_SHOULDER, self.LEFT_HIP, self.RIGHT_HIP], min_vis=self.min_visibility):
+        lateral_offset = 0.0
+        torso_visible = self.are_visible(landmarks, [self.LEFT_SHOULDER, self.RIGHT_SHOULDER, self.LEFT_HIP, self.RIGHT_HIP], min_vis=self.min_visibility)
+        if torso_visible:
             shoulder_mid_x = (landmarks[self.LEFT_SHOULDER].x + landmarks[self.RIGHT_SHOULDER].x) / 2.0
             hip_mid_x = (landmarks[self.LEFT_HIP].x + landmarks[self.RIGHT_HIP].x) / 2.0
             lateral_offset = abs(shoulder_mid_x - hip_mid_x)
@@ -102,17 +136,91 @@ class LungesDetector(BaseExercise):
             else:
                 balance_status = "OFF BALANCE"
 
-        posture_feedback = "Good Form"
-        if balance_status == "OFF BALANCE":
-            posture_feedback = "Maintain balance and keep torso upright"
-        elif front_knee_angle < 75:
-            posture_feedback = "Don't let front knee push too far forward"
+        knee_past_toes = front_knee_angle < 75.0
+
+        # Track rep progression
+        if self.state_machine.stage == Stage.STARTING:
+            if self._rep_start_time == 0.0:
+                self._rep_start_time = current_time
+                self._min_knee_angle_in_rep = front_knee_angle
+                self._max_lateral_offset_in_rep = lateral_offset
+                self._knee_past_toes_in_rep = knee_past_toes
+        else:
+            self._min_knee_angle_in_rep = min(self._min_knee_angle_in_rep, front_knee_angle)
+            self._max_lateral_offset_in_rep = max(self._max_lateral_offset_in_rep, lateral_offset)
+            if knee_past_toes:
+                self._knee_past_toes_in_rep = True
+
+        cycle_completed = self.state_machine.update(front_knee_angle, current_time)
+        self.stage = self.state_machine.stage_name
+
+        rep_incremented = False
+        rep_invalid = False
+
+        if cycle_completed:
+            flaws = []
+            if self._max_lateral_offset_in_rep > self.balance_tolerance:
+                flaws.append(("Losing balance / torso sway", "Maintain balance and keep your torso upright."))
+            if self._knee_past_toes_in_rep:
+                flaws.append(("Front knee pushing too far past toes", "Keep your front knee aligned directly over your ankle."))
+            if self._min_knee_angle_in_rep > 105.0:
+                flaws.append(("Insufficient lunge depth", "Lower yourself a little more into a deeper lunge."))
+            if front_knee_angle < 150.0:
+                flaws.append(("Incomplete return to standing", "Return all the way to a full standing position."))
+
+            if flaws:
+                self.invalid_reps += 1
+                self.state_machine.reps = self.valid_reps
+                self.reps = self.valid_reps
+                rep_incremented = False
+                rep_invalid = True
+                self.form_status = "Needs Correction"
+                self.form_issue = flaws[0][0]
+                self.form_correction = flaws[0][1]
+            else:
+                self.valid_reps += 1
+                self.reps = self.valid_reps
+                rep_incremented = True
+                rep_invalid = False
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Good form! Rep completed."
+
+            self._rep_start_time = current_time
+            self._min_knee_angle_in_rep = front_knee_angle
+            self._max_lateral_offset_in_rep = lateral_offset
+            self._knee_past_toes_in_rep = False
+
+        else:
+            # Real-time form coaching
+            if balance_status == "OFF BALANCE":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Losing balance / torso sway"
+                self.form_correction = "Maintain balance and keep your torso upright."
+            elif knee_past_toes:
+                self.form_status = "Needs Correction"
+                self.form_issue = "Front knee pushing too far past toes"
+                self.form_correction = "Keep your front knee aligned directly over your ankle."
+            elif front_knee_angle > 105.0 and self.stage == "inflected":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Insufficient lunge depth"
+                self.form_correction = "Lower into a deeper lunge."
+            else:
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Maintain this form!"
 
         return {
-            "reps": self.reps,
+            "reps": self.valid_reps,
+            "valid_reps": self.valid_reps,
+            "invalid_reps": self.invalid_reps,
             "rep_incremented": rep_incremented,
+            "rep_invalid": rep_invalid,
             "front_knee_angle": int(front_knee_angle),
             "torso_angle": int(torso_angle),
             "balance_status": balance_status,
-            "posture_feedback": posture_feedback,
+            "form_status": self.form_status,
+            "form_issue": self.form_issue,
+            "form_correction": self.form_correction,
+            "posture_feedback": self.form_correction if self.form_status == "Needs Correction" else "Good Form",
         }

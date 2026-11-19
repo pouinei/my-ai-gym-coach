@@ -57,6 +57,7 @@ class VoicePipeline:
         self.last_spoken_text: str = ""
         self.last_stage: Optional[str] = None
         self.muted: bool = False
+        self.had_form_issue: bool = False
 
         if precache:
             self._precache_standard_cues()
@@ -81,6 +82,10 @@ class VoicePipeline:
             logger.warning(f"Voice pipeline pre-caching warning: {e}")
 
     def _find_form_issue(self, exercise: str, metrics: Dict[str, Any]) -> Optional[str]:
+        # Direct check from detector's form analysis
+        if metrics.get("form_status") == "Needs Correction":
+            return metrics.get("form_correction") or metrics.get("form_issue")
+
         if "issue" in metrics:
             return metrics["issue"]
 
@@ -88,40 +93,37 @@ class VoicePipeline:
             depth = metrics.get("depth_status", "")
             back_angle = metrics.get("back_angle", 180)
             if depth in ("TOO HIGH", "HALF SQUAT"):
-                return "The user's squat is not deep enough — knees are not bending sufficiently."
+                return "Squat a little deeper for full range of motion."
             if isinstance(back_angle, (int, float)) and back_angle < 120:
-                return "The user is leaning too far forward during the squat."
+                return "Keep your chest up and back straight."
 
         elif exercise == "Push-ups":
             alignment = metrics.get("body_alignment", "")
             hip_status = metrics.get("hip_status", "")
             if alignment == "Poor Form":
-                return "The user's body is not straight during the push-up."
+                return "Keep your body in a straight line."
             if hip_status == "SAGGING":
-                return "The user's hips are sagging down — keep the core engaged."
+                return "Keep your core tight; do not let your hips sag."
             if hip_status == "PIKED UP":
-                return "The user's hips are too high — lower them to form a plank."
+                return "Lower your hips into a straight plank line."
 
         elif exercise == "Biceps Curls (Dumbbell)":
             swing = metrics.get("swing_status", "")
             shoulder = metrics.get("shoulder_status", "")
             if swing == "SWINGING":
-                return "The user is swinging their torso — keep the body still and isolate biceps."
+                return "Avoid swinging your body; isolate your biceps."
             if shoulder == "ELBOW DRIFTING":
-                return "The user's elbows are drifting away from their sides."
+                return "Keep your elbows pinned to your sides."
 
         elif exercise == "Shoulder Press":
             back_arch = metrics.get("back_arch_status", "")
-            posture = metrics.get("posture_feedback", "")
             if back_arch == "Excessive Arch":
-                return "The user is arching their lower back excessively during the press."
-            if "elbow" in posture.lower():
-                return "Don't lower elbows too far below shoulders."
+                return "Don't arch your lower back. Brace your core."
 
         elif exercise == "Lunges":
             balance = metrics.get("balance_status", "")
             if balance == "OFF BALANCE":
-                return "The user is losing balance — keep feet hip-width apart and torso upright."
+                return "Maintain balance and keep your torso upright."
 
         return None
 
@@ -139,9 +141,12 @@ class VoicePipeline:
             return None
 
         now = time.time()
-        is_major_event = event in ("workout_started", "rep_completed", "set_completed", "workout_completed")
+        is_major_event = event in ("workout_started", "rep_completed", "set_completed", "workout_completed", "rep_invalid")
 
         issue = self._find_form_issue(exercise, metrics) if not is_major_event else None
+
+        if issue:
+            self.had_form_issue = True
 
         # Check for stage-specific movement guidance
         stage = metrics.get("stage") or metrics.get("exercise_stage")
@@ -155,11 +160,20 @@ class VoicePipeline:
         if not is_major_event:
             if (now - self.last_spoken_at) < 3.5:
                 return None
+
+            # Resume positive feedback when form was corrected
+            if not issue and not stage_cue and self.had_form_issue and metrics.get("form_status") == "Good":
+                self.had_form_issue = False
+                issue = "Form is clean! Looking strong."
+
             if not issue and not stage_cue and event == "ongoing_form_check":
                 return None
 
         # Determine spoken text
-        if stage_cue and not issue:
+        if event == "rep_invalid":
+            reason = metrics.get("form_correction") or metrics.get("form_issue", "check your form")
+            text = f"Rep not counted. {reason}"
+        elif stage_cue and not issue:
             text = stage_cue
         else:
             text = self.llm.give_feedback(event, issue, exercise)
@@ -167,8 +181,8 @@ class VoicePipeline:
         if not text:
             return None
 
-        # Prevent repeating identical text within 3 seconds
-        if text.strip().lower() == self.last_spoken_text.strip().lower() and (now - self.last_spoken_at) < 3.0:
+        # Prevent repeating identical text within 4 seconds
+        if text.strip().lower() == self.last_spoken_text.strip().lower() and (now - self.last_spoken_at) < 4.0:
             return None
 
         audio_bytes = self.tts.speak(text)

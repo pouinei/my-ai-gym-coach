@@ -32,6 +32,10 @@ class WorkoutStateManager:
         self.sets_completed: int = 0
         self.current_set_reps: int = 0
         self.total_reps: int = 0
+        self.invalid_reps: int = 0
+        self.last_form_status: str = "Good"
+        self.last_form_issue: str = "None - Form is clean"
+        self.last_form_correction: str = "Maintain this form!"
         self.status: WorkoutStatus = WorkoutStatus.IDLE
         self.started_at: float = 0.0
         self.completed_at: float = 0.0
@@ -47,6 +51,10 @@ class WorkoutStateManager:
             self.sets_completed = 0
             self.current_set_reps = 0
             self.total_reps = 0
+            self.invalid_reps = 0
+            self.last_form_status = "Good"
+            self.last_form_issue = "None - Form is clean"
+            self.last_form_correction = "Maintain this form!"
             now = time.time()
             self.started_at = now
             self.set_started_at = now
@@ -57,6 +65,19 @@ class WorkoutStateManager:
                 self.status = WorkoutStatus.ACTIVE
             else:
                 self.status = WorkoutStatus.IDLE
+
+    def record_invalid_rep(self, reason: str = "", correction: str = "") -> None:
+        """
+        Records an incomplete or invalid repetition attempt rejected due to form violations.
+        Does NOT increment valid reps, current set reps, or completed sets.
+        """
+        with self._lock:
+            self.invalid_reps += 1
+            self.last_form_status = "Needs Correction"
+            if reason:
+                self.last_form_issue = reason
+            if correction:
+                self.last_form_correction = correction
 
     def record_rep(self, timestamp: Optional[float] = None) -> Tuple[bool, Optional[str]]:
         """
@@ -116,6 +137,10 @@ class WorkoutStateManager:
             self.sets_completed = 0
             self.current_set_reps = 0
             self.total_reps = 0
+            self.invalid_reps = 0
+            self.last_form_status = "Good"
+            self.last_form_issue = "None - Form is clean"
+            self.last_form_correction = "Maintain this form!"
             self.status = WorkoutStatus.IDLE
             self.started_at = 0.0
             self.completed_at = 0.0
@@ -145,6 +170,11 @@ class WorkoutStateManager:
                 "sets_completed": self.sets_completed,
                 "current_set_reps": self.current_set_reps,
                 "total_reps": self.total_reps,
+                "valid_reps": self.total_reps,
+                "invalid_reps": self.invalid_reps,
+                "form_status": self.last_form_status,
+                "form_issue": self.last_form_issue,
+                "form_correction": self.last_form_correction,
                 "status": self.status.value,
                 "is_active": self.status == WorkoutStatus.ACTIVE,
                 "is_completed": self.status == WorkoutStatus.COMPLETED,

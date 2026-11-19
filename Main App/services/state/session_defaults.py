@@ -27,6 +27,7 @@ def initial_session_defaults():
         "voice_muted": False,
         "last_voiced_rep": 0,
         "last_voiced_set": 0,
+        "last_voiced_invalid": 0,
         "audio_event_id": "",
         "last_played_audio_event_id": "",
         "audio_to_play": None,
@@ -37,6 +38,13 @@ def initial_session_defaults():
         "voice_test_issue": None,
         "voice_test_id": "",
         "last_played_test_id": "",
+
+        # Form Feedback & Quality Tracking
+        "valid_reps": 0,
+        "invalid_reps": 0,
+        "form_status": "Good",
+        "form_issue": "None - Form is clean",
+        "form_correction": "Maintain this form!",
 
         # Common Angles
         "knee_angle": 0,

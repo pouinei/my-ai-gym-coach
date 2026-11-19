@@ -28,27 +28,48 @@ def get_deterministic_cue(event: str, issue: Optional[str] = None, exercise: Opt
     if event == "workout_started" and exercise in EXERCISE_START_CUES:
         return EXERCISE_START_CUES[exercise]
 
+    if event == "rep_invalid":
+        if issue:
+            return f"Rep not counted: {issue}"
+        return "Rep not counted. Please check your form."
+
     if issue:
         cleaned_issue = issue.lower()
-        if "deep" in cleaned_issue:
+        if "arch" in cleaned_issue:
+            return "Don't arch your lower back. Keep your core tight."
+        elif "uneven" in cleaned_issue or "asymmetry" in cleaned_issue:
+            return "Move both arms evenly."
+        elif "fast" in cleaned_issue or "speed" in cleaned_issue:
+            return "Slow down your movement."
+        elif "valgus" in cleaned_issue or "align" in cleaned_issue or ("knee" in cleaned_issue and "toe" in cleaned_issue):
+            return "Keep your knees aligned with your toes."
+        elif "extend" in cleaned_issue or "extension" in cleaned_issue:
+            if "elbow" in cleaned_issue or "arm" in cleaned_issue:
+                return "Extend your arms fully overhead."
+            elif "stand" in cleaned_issue or "standing" in cleaned_issue:
+                return "Stand all the way up."
+            return "Push all the way up to full extension."
+        elif "deep" in cleaned_issue or "depth" in cleaned_issue:
             return "Squat a little deeper for full range of motion."
-        elif "arch" in cleaned_issue or "leaning" in cleaned_issue:
-            return "Brace your core and keep your back straight."
         elif "sag" in cleaned_issue:
             return "Keep your core tight; do not let your hips sag."
         elif "pike" in cleaned_issue or "high" in cleaned_issue:
             return "Lower your hips into a straight plank line."
-        elif "swing" in cleaned_issue:
-            return "Keep your torso still; avoid using momentum."
+        elif "swing" in cleaned_issue or "momentum" in cleaned_issue:
+            return "Avoid swinging your body; isolate your muscles."
         elif "drift" in cleaned_issue or "elbow" in cleaned_issue:
             return "Keep your elbows pinned to your sides."
-        elif "balance" in cleaned_issue:
+        elif "lower" in cleaned_issue or "chest" in cleaned_issue:
+            return "Lower yourself a little more."
+        elif "curl" in cleaned_issue:
+            return "Curl the weight all the way to the top."
+        elif "balance" in cleaned_issue or "sway" in cleaned_issue:
             return "Maintain balance and keep your torso upright."
         elif "frame" in cleaned_issue or "camera" in cleaned_issue:
             return "Please step into the camera frame."
         return issue
 
-    return DEFAULT_COACHING_CUES.get(event, "Keep going! Good form.")
+    return DEFAULT_COACHING_CUES.get(event, "Good form! Keep going.")
 
 
 class LLMCoach:

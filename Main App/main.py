@@ -272,7 +272,12 @@ def main():
 
             st.subheader("Progress")
 
-            st.metric("Total Reps", f"{total_reps}")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                st.metric("Valid Reps", f"{total_reps}")
+            with col_p2:
+                st.metric("Invalid", f"{st.session_state.get('invalid_reps', 0)}")
+
             st.metric("Current Set Reps", f"{current_set_reps} / {reps_per_set}")
             st.metric("Sets Completed", f"{sets_completed} / {target_sets}")
 
@@ -321,6 +326,40 @@ def main():
     if not st.session_state.get("voice_muted", False) and st.session_state.get("audio_to_play"):
         event_id = st.session_state.get("audio_event_id", "")
         autoplay_audio(st.session_state.audio_to_play, text=st.session_state.get("coach_feedback", ""), event_id=event_id)
+
+    if workout_started:
+        form_status = st.session_state.get("form_status", "Good")
+        form_issue = st.session_state.get("form_issue", "None - Form is clean")
+        form_correction = st.session_state.get("form_correction", "Maintain this form!")
+        valid_reps_count = st.session_state.get("valid_reps", st.session_state.get("reps", 0))
+        invalid_reps_count = st.session_state.get("invalid_reps", 0)
+
+        with st.container():
+            st.markdown("#### 🎯 Real-Time Form Analysis & Quality Tracker")
+            col_f1, col_f2, col_f3 = st.columns([1.4, 1, 1])
+
+            with col_f1:
+                if form_status == "Good":
+                    st.success("🟢 **Form Status: Good**")
+                elif form_status == "Needs Correction":
+                    st.warning("⚠️ **Form Status: Needs Correction**")
+                else:
+                    st.info("⚪ **Form Status: Unable to Assess**")
+
+            with col_f2:
+                st.metric("✅ Valid Reps", valid_reps_count)
+
+            with col_f3:
+                st.metric("❌ Invalid / Incomplete", invalid_reps_count)
+
+            if form_status == "Needs Correction":
+                st.error(f"**Detected Issue:** {form_issue}\n\n👉 **Recommended Correction:** {form_correction}")
+            elif form_status == "Unable to Assess":
+                st.info(f"**Status:** {form_issue}\n\n👉 **Recommended Action:** {form_correction}")
+            else:
+                st.caption(f"✨ **Coaching Guidance:** {form_correction}")
+
+        st.markdown("")
 
     if not workout_started:
         st.markdown(

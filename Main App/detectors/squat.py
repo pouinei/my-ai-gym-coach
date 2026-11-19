@@ -1,6 +1,6 @@
 import time
 from core.base_exercise import BaseExercise
-from core.rep_state_machine import RepetitionStateMachine, Direction
+from core.rep_state_machine import RepetitionStateMachine, Direction, Stage
 from services.config.workout_config import DETECTOR_CONFIG
 
 
@@ -28,11 +28,26 @@ class SquatDetector(BaseExercise):
         self.min_visibility = cfg.get("min_visibility", 0.65)
         self._active_side = None
 
+        # Per-rep tracking
+        self._rep_start_time = 0.0
+        self._min_knee_angle_in_rep = 180.0
+        self._min_back_angle_in_rep = 180.0
+        self._valgus_detected_in_rep = False
+
     def reset(self) -> None:
         self.state_machine.reset()
         self.reps = 0
+        self.valid_reps = 0
+        self.invalid_reps = 0
         self.stage = None
         self._active_side = None
+        self._rep_start_time = 0.0
+        self._min_knee_angle_in_rep = 180.0
+        self._min_back_angle_in_rep = 180.0
+        self._valgus_detected_in_rep = False
+        self.form_status = "Good"
+        self.form_issue = "None - Form is clean"
+        self.form_correction = "Maintain this form!"
 
     def _select_tracking_side(self, landmarks) -> str:
         left_vis = (
@@ -78,6 +93,25 @@ class SquatDetector(BaseExercise):
             landmarks, [hip_idx, knee_idx, ankle_idx], min_vis=self.min_visibility
         )
 
+        if not key_landmarks_visible:
+            self.form_status = "Unable to Assess"
+            self.form_issue = "Leg landmarks occluded or outside camera view"
+            self.form_correction = "Adjust camera so your hips, knees, and ankles are clearly visible."
+            return {
+                "reps": self.valid_reps,
+                "valid_reps": self.valid_reps,
+                "invalid_reps": self.invalid_reps,
+                "rep_incremented": False,
+                "rep_invalid": False,
+                "knee_angle": 0,
+                "back_angle": 0,
+                "depth_status": "STANDING",
+                "form_status": self.form_status,
+                "form_issue": self.form_issue,
+                "form_correction": self.form_correction,
+                "posture_feedback": self.form_issue,
+            }
+
         knee_angle = self.calculate_angle(
             self.get_point(landmarks, hip_idx),
             self.get_point(landmarks, knee_idx),
@@ -85,18 +119,98 @@ class SquatDetector(BaseExercise):
         )
 
         back_angle = 180.0
-        if self.are_visible(landmarks, [shoulder_idx, hip_idx, knee_idx], min_vis=self.min_visibility):
+        back_visible = self.are_visible(landmarks, [shoulder_idx, hip_idx, knee_idx], min_vis=self.min_visibility)
+        if back_visible:
             back_angle = self.calculate_angle(
                 self.get_point(landmarks, shoulder_idx),
                 self.get_point(landmarks, hip_idx),
                 self.get_point(landmarks, knee_idx),
             )
 
+        # Frontal knee valgus check if both knees and ankles visible
+        both_legs_visible = self.are_visible(
+            landmarks,
+            [self.LEFT_KNEE, self.RIGHT_KNEE, self.LEFT_ANKLE, self.RIGHT_ANKLE],
+            min_vis=0.55,
+        )
+        valgus_active = False
+        if both_legs_visible:
+            knee_dist = abs(landmarks[self.LEFT_KNEE].x - landmarks[self.RIGHT_KNEE].x)
+            ankle_dist = abs(landmarks[self.LEFT_ANKLE].x - landmarks[self.RIGHT_ANKLE].x)
+            if ankle_dist > 0.08 and knee_dist < (0.65 * ankle_dist):
+                valgus_active = True
+
+        # Track rep progression
+        if self.state_machine.stage == Stage.STARTING:
+            if self._rep_start_time == 0.0:
+                self._rep_start_time = current_time
+                self._min_knee_angle_in_rep = knee_angle
+                self._min_back_angle_in_rep = back_angle
+                self._valgus_detected_in_rep = valgus_active
+        else:
+            self._min_knee_angle_in_rep = min(self._min_knee_angle_in_rep, knee_angle)
+            self._min_back_angle_in_rep = min(self._min_back_angle_in_rep, back_angle)
+            if valgus_active:
+                self._valgus_detected_in_rep = True
+
+        cycle_completed = self.state_machine.update(knee_angle, current_time)
+        self.stage = self.state_machine.stage_name
+
         rep_incremented = False
-        if key_landmarks_visible:
-            rep_incremented = self.state_machine.update(knee_angle, current_time)
-            self.reps = self.state_machine.reps
-            self.stage = self.state_machine.stage_name
+        rep_invalid = False
+
+        if cycle_completed:
+            flaws = []
+            if back_visible and self._min_back_angle_in_rep < 120.0:
+                flaws.append(("Excessive forward trunk lean", "Keep your chest up and back straight."))
+            if self._min_knee_angle_in_rep > 105.0:
+                flaws.append(("Insufficient squat depth", "Squat a little deeper for full range of motion."))
+            if self._valgus_detected_in_rep:
+                flaws.append(("Knees caving inward (valgus)", "Keep your knees aligned with your toes; push knees outward."))
+            if knee_angle < 155.0:
+                flaws.append(("Incomplete standing extension", "Stand all the way up to finish the rep."))
+
+            if flaws:
+                self.invalid_reps += 1
+                self.state_machine.reps = self.valid_reps
+                self.reps = self.valid_reps
+                rep_incremented = False
+                rep_invalid = True
+                self.form_status = "Needs Correction"
+                self.form_issue = flaws[0][0]
+                self.form_correction = flaws[0][1]
+            else:
+                self.valid_reps += 1
+                self.reps = self.valid_reps
+                rep_incremented = True
+                rep_invalid = False
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Good form! Rep completed."
+
+            self._rep_start_time = current_time
+            self._min_knee_angle_in_rep = knee_angle
+            self._min_back_angle_in_rep = back_angle
+            self._valgus_detected_in_rep = False
+
+        else:
+            # Real-time form coaching
+            if back_visible and back_angle < 120.0:
+                self.form_status = "Needs Correction"
+                self.form_issue = "Excessive forward trunk lean"
+                self.form_correction = "Keep your chest up and back straight."
+            elif valgus_active:
+                self.form_status = "Needs Correction"
+                self.form_issue = "Knees caving inward (valgus)"
+                self.form_correction = "Keep your knees aligned with your toes."
+            elif knee_angle > 105.0 and self.stage == "inflected":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Insufficient squat depth"
+                self.form_correction = "Squat a little deeper."
+            else:
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Maintain this form!"
 
         if knee_angle <= self.state_machine.inflection_threshold:
             depth_status = "GOOD DEPTH"
@@ -107,17 +221,17 @@ class SquatDetector(BaseExercise):
         else:
             depth_status = "DESCENDING"
 
-        posture_feedback = "Good Form"
-        if back_angle < 120:
-            posture_feedback = "Keep chest up and back straight"
-        elif knee_angle > 100 and self.stage == "inflected":
-            posture_feedback = "Squat a little deeper"
-
         return {
-            "reps": self.reps,
+            "reps": self.valid_reps,
+            "valid_reps": self.valid_reps,
+            "invalid_reps": self.invalid_reps,
             "rep_incremented": rep_incremented,
+            "rep_invalid": rep_invalid,
             "knee_angle": int(knee_angle),
             "back_angle": int(back_angle),
             "depth_status": depth_status,
-            "posture_feedback": posture_feedback,
+            "form_status": self.form_status,
+            "form_issue": self.form_issue,
+            "form_correction": self.form_correction,
+            "posture_feedback": self.form_correction if self.form_status == "Needs Correction" else "Good Form",
         }

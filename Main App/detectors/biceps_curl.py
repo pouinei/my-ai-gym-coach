@@ -1,7 +1,7 @@
 import math
 import time
 from core.base_exercise import BaseExercise
-from core.rep_state_machine import RepetitionStateMachine, Direction
+from core.rep_state_machine import RepetitionStateMachine, Direction, Stage
 from services.config.workout_config import DETECTOR_CONFIG
 
 
@@ -27,15 +27,30 @@ class BicepsCurlDetector(BaseExercise):
             consecutive_frames=cfg.get("consecutive_frames", 2),
         )
         self.min_visibility = cfg.get("min_visibility", 0.65)
-        self.elbow_drift_tolerance = cfg.get("elbow_drift_tolerance", 0.06)
-        self.swing_threshold = cfg.get("swing_threshold", 15.0)
+        self.elbow_drift_tolerance = cfg.get("elbow_drift_tolerance", 0.07)
+        self.swing_threshold = cfg.get("swing_threshold", 14.0)
         self._active_side = None
+
+        # Per-rep tracking
+        self._rep_start_time = 0.0
+        self._min_elbow_angle_in_rep = 180.0
+        self._max_elbow_drift_in_rep = 0.0
+        self._max_torso_angle_in_rep = 0.0
 
     def reset(self) -> None:
         self.state_machine.reset()
         self.reps = 0
+        self.valid_reps = 0
+        self.invalid_reps = 0
         self.stage = None
         self._active_side = None
+        self._rep_start_time = 0.0
+        self._min_elbow_angle_in_rep = 180.0
+        self._max_elbow_drift_in_rep = 0.0
+        self._max_torso_angle_in_rep = 0.0
+        self.form_status = "Good"
+        self.form_issue = "None - Form is clean"
+        self.form_correction = "Maintain this form!"
 
     def _select_tracking_side(self, landmarks) -> str:
         left_vis = (
@@ -82,17 +97,30 @@ class BicepsCurlDetector(BaseExercise):
             landmarks, [shoulder_idx, elbow_idx, wrist_idx], min_vis=self.min_visibility
         )
 
+        if not key_landmarks_visible:
+            self.form_status = "Unable to Assess"
+            self.form_issue = "Arm landmarks occluded or outside camera view"
+            self.form_correction = "Step back into camera frame so your arm and torso are clearly visible."
+            return {
+                "reps": self.valid_reps,
+                "valid_reps": self.valid_reps,
+                "invalid_reps": self.invalid_reps,
+                "rep_incremented": False,
+                "rep_invalid": False,
+                "elbow_angle": 0,
+                "shoulder_status": "STABLE",
+                "swing_status": "NO SWING",
+                "form_status": self.form_status,
+                "form_issue": self.form_issue,
+                "form_correction": self.form_correction,
+                "posture_feedback": self.form_issue,
+            }
+
         elbow_angle = self.calculate_angle(
             self.get_point(landmarks, shoulder_idx),
             self.get_point(landmarks, elbow_idx),
             self.get_point(landmarks, wrist_idx),
         )
-
-        rep_incremented = False
-        if key_landmarks_visible:
-            rep_incremented = self.state_machine.update(elbow_angle, current_time)
-            self.reps = self.state_machine.reps
-            self.stage = self.state_machine.stage_name
 
         shoulder_x = landmarks[shoulder_idx].x
         elbow_x = landmarks[elbow_idx].x
@@ -104,7 +132,10 @@ class BicepsCurlDetector(BaseExercise):
             shoulder_status = "ELBOW DRIFTING"
 
         swing_status = "NO SWING"
-        if self.are_visible(landmarks, [self.LEFT_SHOULDER, self.RIGHT_SHOULDER, self.LEFT_HIP, self.RIGHT_HIP], min_vis=self.min_visibility):
+        torso_angle = 0.0
+        torso_visible = self.are_visible(landmarks, [self.LEFT_SHOULDER, self.RIGHT_SHOULDER, self.LEFT_HIP, self.RIGHT_HIP], min_vis=self.min_visibility)
+
+        if torso_visible:
             shoulder_mid_x = (landmarks[self.LEFT_SHOULDER].x + landmarks[self.RIGHT_SHOULDER].x) / 2.0
             shoulder_mid_y = (landmarks[self.LEFT_SHOULDER].y + landmarks[self.RIGHT_SHOULDER].y) / 2.0
             hip_mid_x = (landmarks[self.LEFT_HIP].x + landmarks[self.RIGHT_HIP].x) / 2.0
@@ -119,17 +150,88 @@ class BicepsCurlDetector(BaseExercise):
             else:
                 swing_status = "SWINGING"
 
-        posture_feedback = "Good Form"
-        if swing_status == "SWINGING":
-            posture_feedback = "Avoid swinging torso; isolate the bicep"
-        elif shoulder_status == "ELBOW DRIFTING":
-            posture_feedback = "Keep elbows pinned to your sides"
+        # Track rep progression
+        if self.state_machine.stage == Stage.STARTING:
+            if self._rep_start_time == 0.0:
+                self._rep_start_time = current_time
+                self._min_elbow_angle_in_rep = elbow_angle
+                self._max_elbow_drift_in_rep = elbow_drift
+                self._max_torso_angle_in_rep = torso_angle
+        else:
+            self._min_elbow_angle_in_rep = min(self._min_elbow_angle_in_rep, elbow_angle)
+            self._max_elbow_drift_in_rep = max(self._max_elbow_drift_in_rep, elbow_drift)
+            self._max_torso_angle_in_rep = max(self._max_torso_angle_in_rep, torso_angle)
+
+        cycle_completed = self.state_machine.update(elbow_angle, current_time)
+        self.stage = self.state_machine.stage_name
+
+        rep_incremented = False
+        rep_invalid = False
+
+        if cycle_completed:
+            flaws = []
+            if torso_visible and self._max_torso_angle_in_rep > self.swing_threshold:
+                flaws.append(("Swinging the torso using momentum", "Avoid swinging your body; isolate your biceps."))
+            if self._max_elbow_drift_in_rep > self.elbow_drift_tolerance:
+                flaws.append(("Excessive elbow drift", "Keep your elbows pinned to your sides."))
+            if self._min_elbow_angle_in_rep > 65.0:
+                flaws.append(("Incomplete curl range", "Curl the weight all the way to the top."))
+            if elbow_angle < 145.0:
+                flaws.append(("Incomplete lowering", "Lower the weight all the way down."))
+
+            if flaws:
+                self.invalid_reps += 1
+                self.state_machine.reps = self.valid_reps
+                self.reps = self.valid_reps
+                rep_incremented = False
+                rep_invalid = True
+                self.form_status = "Needs Correction"
+                self.form_issue = flaws[0][0]
+                self.form_correction = flaws[0][1]
+            else:
+                self.valid_reps += 1
+                self.reps = self.valid_reps
+                rep_incremented = True
+                rep_invalid = False
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Good form! Rep completed."
+
+            self._rep_start_time = current_time
+            self._min_elbow_angle_in_rep = elbow_angle
+            self._max_elbow_drift_in_rep = elbow_drift
+            self._max_torso_angle_in_rep = torso_angle
+
+        else:
+            # Real-time form coaching
+            if swing_status == "SWINGING":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Swinging the torso using momentum"
+                self.form_correction = "Avoid swinging your body; isolate your biceps."
+            elif shoulder_status == "ELBOW DRIFTING":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Excessive elbow drift"
+                self.form_correction = "Keep your elbows pinned to your sides."
+            elif elbow_angle > 65.0 and self.stage == "inflected":
+                self.form_status = "Needs Correction"
+                self.form_issue = "Incomplete curl range"
+                self.form_correction = "Curl the weight all the way to the top."
+            else:
+                self.form_status = "Good"
+                self.form_issue = "None - Form is clean"
+                self.form_correction = "Maintain this form!"
 
         return {
-            "reps": self.reps,
+            "reps": self.valid_reps,
+            "valid_reps": self.valid_reps,
+            "invalid_reps": self.invalid_reps,
             "rep_incremented": rep_incremented,
+            "rep_invalid": rep_invalid,
             "elbow_angle": int(elbow_angle),
             "shoulder_status": shoulder_status,
             "swing_status": swing_status,
-            "posture_feedback": posture_feedback,
+            "form_status": self.form_status,
+            "form_issue": self.form_issue,
+            "form_correction": self.form_correction,
+            "posture_feedback": self.form_correction if self.form_status == "Needs Correction" else "Good Form",
         }

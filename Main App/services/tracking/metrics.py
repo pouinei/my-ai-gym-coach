@@ -77,6 +77,11 @@ def sync_metrics_update(context):
         workout_completed = False
 
     st.session_state.reps = total_reps
+    st.session_state.valid_reps = total_reps
+    st.session_state.invalid_reps = latest_metrics.get("invalid_reps", 0)
+    st.session_state.form_status = latest_metrics.get("form_status", "Good")
+    st.session_state.form_issue = latest_metrics.get("form_issue", "None - Form is clean")
+    st.session_state.form_correction = latest_metrics.get("form_correction", "Maintain this form!")
     st.session_state.sets_completed = sets_completed
     st.session_state.current_set_reps = current_set_reps
     st.session_state.workout_completed = workout_completed
@@ -94,6 +99,19 @@ def sync_metrics_update(context):
         if current_set_reps > 0 and st.session_state.get("voice_pipeline"):
             result = st.session_state.voice_pipeline.process_event(
                 event="rep_completed",
+                exercise=exercise,
+                metrics=latest_metrics,
+            )
+            _apply_voice_result(result)
+
+    # 1b. Rep invalid voice notification (fires when a repetition was rejected due to form violation)
+    current_invalid = latest_metrics.get("invalid_reps", 0)
+    last_voiced_invalid = st.session_state.get("last_voiced_invalid", 0)
+    if current_invalid > last_voiced_invalid and not workout_completed:
+        st.session_state.last_voiced_invalid = current_invalid
+        if st.session_state.get("voice_pipeline"):
+            result = st.session_state.voice_pipeline.process_event(
+                event="rep_invalid",
                 exercise=exercise,
                 metrics=latest_metrics,
             )

@@ -167,6 +167,30 @@ class VideoProcessorClass(VideoProcessorBase):
             self._draw_completion_banner(img)
             return
 
+        # Top Form Status HUD
+        form_status = metrics.get("form_status", "Good")
+        form_correction = metrics.get("form_correction", "")
+        if form_status == "Needs Correction":
+            hud_text = f"FORM: NEEDS CORRECTION | {form_correction}"
+            color = (0, 0, 255)  # Red / BGR
+        elif form_status == "Unable to Assess":
+            hud_text = f"FORM: UNABLE TO ASSESS | STEP INTO FRAME"
+            color = (0, 215, 255)  # Amber / Yellow
+        else:
+            hud_text = "FORM: GOOD"
+            color = (0, 255, 0)  # Green
+
+        cv2.putText(
+            img,
+            hud_text,
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
         if ex_type == "Squats":
             self._draw_squats_overlays(img, metrics)
         elif ex_type == "Push-ups":
@@ -271,10 +295,14 @@ class VideoProcessorClass(VideoProcessorBase):
                 # Process repetition through workout manager if active
                 if metrics.get("rep_incremented", False):
                     self.workout_manager.record_rep()
+                elif metrics.get("rep_invalid", False):
+                    self.workout_manager.record_invalid_rep(metrics.get("form_issue", ""), metrics.get("form_correction", ""))
 
                 # Authoritative state synchronization from WorkoutStateManager
                 snapshot = self.workout_manager.get_snapshot()
                 metrics["reps"] = snapshot["total_reps"]
+                metrics["valid_reps"] = snapshot["valid_reps"]
+                metrics["invalid_reps"] = snapshot["invalid_reps"]
                 metrics["sets_completed"] = snapshot["sets_completed"]
                 metrics["current_set_reps"] = snapshot["current_set_reps"]
                 metrics["workout_completed"] = snapshot["is_completed"]
