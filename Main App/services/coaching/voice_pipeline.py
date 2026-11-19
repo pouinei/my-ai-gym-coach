@@ -4,6 +4,7 @@ import logging
 from typing import Optional, Tuple, Dict, Any
 import streamlit as st
 import streamlit.components.v1 as components
+from services.coaching.tts import validate_audio_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -185,11 +186,12 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
     """
     Renders the audio element into Streamlit.
     Ensures:
-    1. Audio is NOT removed on subsequent 250ms reruns (persists in DOM).
-    2. Uses autoplay=True on first render of an event.
-    3. Injects JS helper to ensure unmuted volume=1.0 and invoke play().
+    1. Audio is valid and decodable via validate_audio_bytes.
+    2. Audio is NOT removed on subsequent 250ms reruns (persists in DOM).
+    3. Uses autoplay=True on first render of an event.
+    4. Injects JS helper to ensure unmuted volume=1.0 and invoke play().
     """
-    if not audio_bytes or len(audio_bytes) < 64:
+    if not audio_bytes or not validate_audio_bytes(audio_bytes):
         return
 
     last_played = st.session_state.get("last_played_audio_event_id")

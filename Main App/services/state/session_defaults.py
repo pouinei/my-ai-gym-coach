@@ -36,6 +36,7 @@ def initial_session_defaults():
         "voice_confirmed": None,
         "voice_test_issue": None,
         "voice_test_id": "",
+        "last_played_test_id": "",
 
         # Common Angles
         "knee_angle": 0,

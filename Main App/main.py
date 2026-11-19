@@ -3,9 +3,12 @@ import os
 import sys
 import time
 import uuid
+import logging
 from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Ensure the app directory is on sys.path and load environment variables
 APP_DIR = Path(__file__).resolve().parent
@@ -33,7 +36,7 @@ from services.vision.exercise_video_processor import VideoProcessorClass
 from services.tracking.metrics import sync_metrics_update
 from groq import Groq
 from services.coaching.llm import LLMCoach
-from services.coaching.tts import TextToSpeech
+from services.coaching.tts import TextToSpeech, validate_audio_bytes
 from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
 
 
@@ -199,25 +202,37 @@ def main():
         test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
         with col_m2:
             if st.button("🧪 Test Voice", width="stretch", key="test_voice_btn"):
-                if voice_pipe:
-                    audio_data = voice_pipe.tts.speak(test_phrase)
-                    if audio_data and voice_pipe.tts.validate_audio_bytes(audio_data):
+                tts_engine = getattr(voice_pipe, "tts", None) if voice_pipe else None
+                if tts_engine:
+                    try:
+                        audio_data = tts_engine.speak(test_phrase)
+                    except Exception as e:
+                        logger.error(f"TTS speak failed during Test Voice: {e}")
+                        audio_data = None
+
+                    if audio_data and validate_audio_bytes(audio_data):
                         test_id = uuid.uuid4().hex
                         st.session_state.voice_test_audio = audio_data
                         st.session_state.voice_test_id = test_id
-                        st.session_state.audio_to_play = audio_data
                         st.session_state.coach_feedback = test_phrase
-                        st.session_state.audio_event_id = test_id
                         st.session_state.voice_confirmed = None
                         st.session_state.voice_test_issue = None
                     else:
                         st.session_state.voice_test_audio = None
                         st.session_state.voice_test_issue = True
+                else:
+                    st.session_state.voice_test_audio = None
+                    st.session_state.voice_test_issue = True
 
         if st.session_state.get("voice_test_audio"):
             st.markdown("---")
             st.markdown("**🔊 Test Voice Player**")
-            st.audio(st.session_state.voice_test_audio, format="audio/mp3", autoplay=True)
+            test_id = st.session_state.get("voice_test_id", "")
+            is_new_test = bool(test_id and test_id != st.session_state.get("last_played_test_id"))
+            if is_new_test:
+                st.session_state["last_played_test_id"] = test_id
+
+            st.audio(st.session_state.voice_test_audio, format="audio/mp3", autoplay=is_new_test)
             st.caption(f"_{test_phrase}_")
 
             st.markdown("**Did you hear the coach speak?**")
@@ -242,6 +257,8 @@ def main():
                     "2. Check that your device and browser tab volume is unmuted.\n"
                     "3. Ensure browser permissions allow audio playback on this site."
                 )
+        elif st.session_state.get("voice_test_issue") is True:
+            st.warning("⚠️ **Voice generation failed.** Could not generate audio. Please check your internet connection or voice settings.")
 
         if workout_started:
             st.divider()

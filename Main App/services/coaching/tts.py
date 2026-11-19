@@ -6,6 +6,40 @@ from gtts import gTTS
 logger = logging.getLogger(__name__)
 
 
+def validate_audio_bytes(audio_bytes: Optional[bytes]) -> bool:
+    """
+    Robust audio validation for decodable MP3 format:
+    - Handles None, empty bytes, non-bytes types, and truncated buffers safely (< 100 bytes).
+    - Recognizes valid ID3 header (ID3v2 tags: 'ID3' at offset 0).
+    - Recognizes valid MPEG audio frame sync (11 consecutive sync bits: 0xFF followed by 0b111xxxxx).
+      Scans up to the first 1024 bytes (or buffer length) to tolerate metadata or container padding.
+    - Rejects clearly invalid, corrupt, or non-audio data.
+    - Never raises an exception; always returns a predictable boolean.
+    - Avoids rejecting valid MP3 files that lack an ID3 header (via MPEG frame sync).
+    """
+    if not isinstance(audio_bytes, (bytes, bytearray)):
+        return False
+    if len(audio_bytes) < 100:
+        return False
+
+    try:
+        # Check for ID3 header (ID3v2 standard tag)
+        if audio_bytes.startswith(b"ID3"):
+            return True
+
+        # Check for MPEG frame synchronization (0xFF followed by 3 set bits 0xE0)
+        # Search within the first 1024 bytes (or buffer length)
+        limit = min(len(audio_bytes) - 1, 1024)
+        for i in range(limit):
+            if audio_bytes[i] == 0xFF and (audio_bytes[i + 1] & 0xE0) == 0xE0:
+                return True
+
+        return False
+    except Exception as e:
+        logger.warning(f"Audio validation failed with error: {e}")
+        return False
+
+
 class TextToSpeech:
     """
     High-performance Text-to-Speech engine using gTTS with:
@@ -15,22 +49,12 @@ class TextToSpeech:
     - Batch pre-caching for instant sub-millisecond coaching cues
     """
 
+    # Expose validate_audio_bytes on TextToSpeech class/instances pointing to canonical function
+    validate_audio_bytes = staticmethod(validate_audio_bytes)
+
     def __init__(self, lang: str = "en"):
         self.lang = lang
         self._cache: Dict[str, bytes] = {}
-
-    @staticmethod
-    def validate_audio_bytes(audio_bytes: Optional[bytes]) -> bool:
-        """
-        Validates that audio bytes are decodable MP3 format:
-        - Non-empty and minimum threshold (> 100 bytes)
-        - Valid MPEG frame sync bits (0xFF and upper 3 bits of byte 1) or ID3 container tag
-        """
-        if not audio_bytes or len(audio_bytes) < 100:
-            return False
-        has_id3 = audio_bytes.startswith(b"ID3")
-        has_sync = (audio_bytes[0] == 0xFF) and ((audio_bytes[1] & 0xE0) == 0xE0)
-        return has_id3 or has_sync
 
     def speak(self, text: str, lang: Optional[str] = None) -> Optional[bytes]:
         cleaned = (text or "").strip()
@@ -49,7 +73,7 @@ class TextToSpeech:
             tts.write_to_fp(buffer)
             audio_bytes = buffer.getvalue()
 
-            if self.validate_audio_bytes(audio_bytes):
+            if validate_audio_bytes(audio_bytes):
                 self._cache[cache_key] = audio_bytes
                 return audio_bytes
             else:

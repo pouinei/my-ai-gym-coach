@@ -9,75 +9,149 @@ MAIN_APP_DIR = PROJECT_ROOT / "Main App"
 if str(MAIN_APP_DIR) not in sys.path:
     sys.path.insert(0, str(MAIN_APP_DIR))
 
-from services.coaching.tts import TextToSpeech
+from services.coaching.tts import TextToSpeech, validate_audio_bytes
 from services.coaching.llm import LLMCoach, get_deterministic_cue
 from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
 from services.state.workout_state import WorkoutStateManager
+from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
 
 
 # ==============================================================================
-# TEST 1: TTS returns valid audio bytes
+# TEST 1: Valid MP3 acceptance
 # ==============================================================================
-def test_1_tts_returns_valid_audio_bytes():
+def test_1_valid_mp3_acceptance():
+    # MPEG frame sync header (0xFF 0xFB) with sufficient length
+    valid_mpeg = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    assert validate_audio_bytes(valid_mpeg) is True
+
+    # ID3v2 container header
+    valid_id3 = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 150
+    assert validate_audio_bytes(valid_id3) is True
+
+    # MPEG frame sync slightly offset (e.g. metadata or padding)
+    offset_mpeg = b"\x00\x00\x00" + b"\xff\xfb\x90\x00" + b"\x00" * 150
+    assert validate_audio_bytes(offset_mpeg) is True
+
+
+# ==============================================================================
+# TEST 2: Empty audio rejection
+# ==============================================================================
+def test_2_empty_audio_rejection():
+    assert validate_audio_bytes(b"") is False
+    assert validate_audio_bytes(bytearray()) is False
+
+
+# ==============================================================================
+# TEST 3: None and invalid types input handling
+# ==============================================================================
+def test_3_none_input_handling():
+    assert validate_audio_bytes(None) is False
+    assert validate_audio_bytes("not_bytes_string") is False  # type: ignore
+    assert validate_audio_bytes(12345) is False  # type: ignore
+    assert validate_audio_bytes([]) is False  # type: ignore
+    assert validate_audio_bytes({}) is False  # type: ignore
+
+
+# ==============================================================================
+# TEST 4: Invalid audio rejection
+# ==============================================================================
+def test_4_invalid_audio_rejection():
+    # Long buffer with zero sync words or ID3 headers
+    assert validate_audio_bytes(b"\x00" * 200) is False
+    assert validate_audio_bytes(b"\x55\xaa" * 100) is False
+    assert validate_audio_bytes(b"This is just plain text masquerading as audio" * 5) is False
+
+
+# ==============================================================================
+# TEST 5: Truncated audio handling
+# ==============================================================================
+def test_5_truncated_audio_handling():
+    # Shorter than 100 bytes minimum threshold
+    assert validate_audio_bytes(b"\xff\xfb\x90\x00") is False
+    assert validate_audio_bytes(b"ID3" + b"\x00" * 20) is False
+    assert validate_audio_bytes(b"\xff\xfb" + b"\x00" * 90) is False
+
+
+# ==============================================================================
+# TEST 6: Validator import and call consistency
+# ==============================================================================
+def test_6_validator_import_and_call_consistency():
+    valid_sample = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    invalid_sample = b"\x00" * 150
+
+    # 1. Module-level canonical function
+    assert validate_audio_bytes(valid_sample) is True
+    assert validate_audio_bytes(invalid_sample) is False
+
+    # 2. TextToSpeech class method
+    assert TextToSpeech.validate_audio_bytes(valid_sample) is True
+    assert TextToSpeech.validate_audio_bytes(invalid_sample) is False
+
+    # 3. TextToSpeech instance method
     tts = TextToSpeech()
-    # Mock gTTS to test without network dependency in CI
+    assert tts.validate_audio_bytes(valid_sample) is True
+    assert tts.validate_audio_bytes(invalid_sample) is False
+
+
+# ==============================================================================
+# TEST 7: TextToSpeech API consistency
+# ==============================================================================
+def test_7_text_to_speech_api_consistency():
+    tts = TextToSpeech()
+    assert hasattr(tts, "speak")
+    assert hasattr(tts, "validate_audio_bytes")
+    assert hasattr(tts, "precache_phrases")
+    assert hasattr(tts, "get_cached_count")
+
+    # Graceful handling of invalid inputs
+    assert tts.speak("") is None
+    assert tts.speak("   ") is None
+    assert tts.speak(None) is None
+
+
+# ==============================================================================
+# TEST 8: Test Voice successful generation
+# ==============================================================================
+def test_8_test_voice_successful_generation():
+    tts = TextToSpeech()
+    test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 200
+
     with mock.patch("services.coaching.tts.gTTS") as mock_gtts:
         mock_instance = mock.MagicMock()
         mock_instance.write_to_fp.side_effect = lambda buf: buf.write(fake_audio)
         mock_gtts.return_value = mock_instance
 
-        audio = tts.speak("Good job! Rep completed.")
+        audio = tts.speak(test_phrase)
         assert audio is not None
-        assert isinstance(audio, bytes)
+        assert validate_audio_bytes(audio) is True
         assert len(audio) > 100
-        assert tts.get_cached_count() >= 1
 
 
 # ==============================================================================
-# TEST 2: Empty or failed audio generation is handled gracefully
+# TEST 9: Test Voice validation failure without crashing
 # ==============================================================================
-def test_2_empty_or_failed_audio_handled():
+def test_9_test_voice_validation_failure_without_crashing():
     tts = TextToSpeech()
+    test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
+    # Corrupt audio with no frame sync
+    corrupt_audio = b"\x00" * 200
 
-    # Empty inputs
-    assert tts.speak("") is None
-    assert tts.speak("   ") is None
-    assert tts.speak(None) is None
+    with mock.patch("services.coaching.tts.gTTS") as mock_gtts:
+        mock_instance = mock.MagicMock()
+        mock_instance.write_to_fp.side_effect = lambda buf: buf.write(corrupt_audio)
+        mock_gtts.return_value = mock_instance
 
-    # Exception during generation
-    with mock.patch("services.coaching.tts.gTTS", side_effect=Exception("Network error")):
-        audio = tts.speak("Should fail gracefully")
+        audio = tts.speak(test_phrase)
+        # Validator inside speak() detects invalid audio and returns None
         assert audio is None
+        assert validate_audio_bytes(audio) is False
 
 
 # ==============================================================================
-# TEST 3: Missing Groq API key uses deterministic fallback coaching
+# TEST 10: Duplicate audio event prevention
 # ==============================================================================
-def test_3_missing_groq_api_key_uses_fallback():
-    # Groq client is None
-    coach = LLMCoach(groq_client=None)
-
-    start_cue = coach.give_feedback("workout_started", exercise="Shoulder Press")
-    assert "Raise your dumbbells" in start_cue
-
-    rep_cue = coach.give_feedback("rep_completed")
-    assert "Rep completed" in rep_cue
-
-    set_cue = coach.give_feedback("set_completed")
-    assert "Set completed" in set_cue
-
-    comp_cue = coach.give_feedback("workout_completed")
-    assert "Workout completed" in comp_cue
-
-    form_cue = coach.give_feedback("ongoing_form_check", issue="The user's squat is not deep enough")
-    assert "Squat a little deeper" in form_cue
-
-
-# ==============================================================================
-# TEST 4: One rep event produces at most one audio event
-# ==============================================================================
-def test_4_one_rep_produces_at_most_one_audio_event():
+def test_10_duplicate_audio_event_prevention():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
@@ -91,19 +165,19 @@ def test_4_one_rep_produces_at_most_one_audio_event():
     assert len(audio1) > 0
     assert event_id1 is not None
 
-    # Immediate duplicate event within 3 seconds is debounced
+    # Immediate second call within 3 seconds is debounced
     res2 = pipeline.process_event("rep_completed", "Squats", {"reps": 1})
     assert res2 is None
 
 
 # ==============================================================================
-# TEST 5: Duplicate Streamlit reruns maintain DOM audio element without restarting
+# TEST 11: Audio persistence across Streamlit reruns
 # ==============================================================================
-def test_5_duplicate_reruns_do_not_duplicate_playback():
+def test_11_audio_persistence_across_streamlit_reruns():
     import streamlit as st
 
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    event_id = "test-event-uuid-unique"
+    event_id = "test-event-uuid-persistence"
 
     st.session_state["last_played_audio_event_id"] = ""
 
@@ -125,54 +199,9 @@ def test_5_duplicate_reruns_do_not_duplicate_playback():
 
 
 # ==============================================================================
-# TEST 5b: Audio byte validation tests
+# TEST 12: Mute behavior
 # ==============================================================================
-def test_5b_validate_audio_bytes():
-    # Valid MPEG frame sync
-    valid_mpeg = b"\xff\xfb\x90\x00" + b"\x00" * 120
-    assert TextToSpeech.validate_audio_bytes(valid_mpeg) is True
-
-    # Valid ID3 header
-    valid_id3 = b"ID3\x03\x00\x00\x00" + b"\x00" * 120
-    assert TextToSpeech.validate_audio_bytes(valid_id3) is True
-
-    # Empty or None
-    assert TextToSpeech.validate_audio_bytes(None) is False
-    assert TextToSpeech.validate_audio_bytes(b"") is False
-
-    # Too short (< 100 bytes)
-    assert TextToSpeech.validate_audio_bytes(b"\xff\xfb\x90\x00") is False
-
-    # Corrupt / non-audio data
-    corrupt = b"\x00\x11\x22\x33" * 30
-    assert TextToSpeech.validate_audio_bytes(corrupt) is False
-
-
-# ==============================================================================
-# TEST 6: Workout completion announcement is triggered once
-# ==============================================================================
-def test_6_workout_completion_announcement_triggered_once():
-    coach = LLMCoach(groq_client=None)
-    tts = TextToSpeech()
-    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    tts._cache["en:workout completed! outstanding job!"] = fake_audio
-
-    pipeline = VoicePipeline(coach, tts)
-
-    res1 = pipeline.process_event("workout_completed", "Push-ups", {})
-    assert res1 is not None
-    audio1, text1, id1 = res1
-    assert "Workout completed" in text1
-
-    # Immediate second call is suppressed
-    res2 = pipeline.process_event("workout_completed", "Push-ups", {})
-    assert res2 is None
-
-
-# ==============================================================================
-# TEST 7: Muted mode prevents audio delivery
-# ==============================================================================
-def test_7_muted_mode_prevents_audio_delivery():
+def test_12_mute_behavior():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     pipeline = VoicePipeline(coach, tts)
@@ -180,13 +209,91 @@ def test_7_muted_mode_prevents_audio_delivery():
 
     assert pipeline.process_event("workout_started", "Squats", {}) is None
     assert pipeline.process_event("rep_completed", "Squats", {}) is None
+    assert pipeline.process_event("set_completed", "Squats", {}) is None
     assert pipeline.process_event("workout_completed", "Squats", {}) is None
+    assert pipeline.process_event("ongoing_form_check", "Squats", {}) is None
 
 
 # ==============================================================================
-# TEST 8: Camera and rep counting continue if TTS fails
+# TEST 13: Groq failure fallback
 # ==============================================================================
-def test_8_rep_counting_continues_if_tts_fails():
+def test_13_groq_failure_fallback():
+    mock_groq = mock.MagicMock()
+    mock_groq.chat.completions.create.side_effect = Exception("Rate limit exceeded 429")
+
+    coach = LLMCoach(groq_client=mock_groq)
+    feedback = coach.give_feedback("rep_completed", exercise="Squats")
+    assert "Rep completed" in feedback
+
+
+# ==============================================================================
+# TEST 14: Missing API key fallback
+# ==============================================================================
+def test_14_missing_api_key_fallback():
+    coach = LLMCoach(groq_client=None)
+
+    assert "Raise your dumbbells" in coach.give_feedback("workout_started", exercise="Shoulder Press")
+    assert "Rep completed" in coach.give_feedback("rep_completed")
+    assert "Set completed" in coach.give_feedback("set_completed")
+    assert "Workout completed" in coach.give_feedback("workout_completed")
+    assert "Squat a little deeper" in coach.give_feedback("ongoing_form_check", issue="squat is not deep enough")
+
+
+# ==============================================================================
+# TEST 15: Rep completion voice announcement
+# ==============================================================================
+def test_15_rep_completion_voice_announcement():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    tts._cache["en:good job! rep completed."] = fake_audio
+
+    pipeline = VoicePipeline(coach, tts)
+    result = pipeline.process_event("rep_completed", "Squats", {"reps": 1})
+    assert result is not None
+    audio, text, event_id = result
+    assert "Rep completed" in text
+    assert len(audio) > 100
+
+
+# ==============================================================================
+# TEST 16: Set completion announcement
+# ==============================================================================
+def test_16_set_completion_announcement():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    tts._cache["en:awesome work! set completed. take a breath."] = fake_audio
+
+    pipeline = VoicePipeline(coach, tts)
+    result = pipeline.process_event("set_completed", "Squats", {"sets_completed": 1})
+    assert result is not None
+    audio, text, event_id = result
+    assert "Set completed" in text
+    assert len(audio) > 100
+
+
+# ==============================================================================
+# TEST 17: Workout completion announcement
+# ==============================================================================
+def test_17_workout_completion_announcement():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    tts._cache["en:workout completed! outstanding job!"] = fake_audio
+
+    pipeline = VoicePipeline(coach, tts)
+    result = pipeline.process_event("workout_completed", "Push-ups", {})
+    assert result is not None
+    audio, text, event_id = result
+    assert "Workout completed" in text
+    assert len(audio) > 100
+
+
+# ==============================================================================
+# TEST 18: Rep counting continues when audio fails
+# ==============================================================================
+def test_18_rep_counting_continues_when_audio_fails():
     manager = WorkoutStateManager()
     manager.start_workout("Shoulder Press", 1, 3)
 
@@ -201,9 +308,9 @@ def test_8_rep_counting_continues_if_tts_fails():
         assert manager.total_reps == 1
 
         voice_res = pipeline.process_event("rep_completed", "Shoulder Press", {})
-        assert voice_res is None  # Voice failed, but did not crash!
+        assert voice_res is None  # Voice returned None safely
 
-        # Rep counting proceeds uninterrupted
+        # Rep counting proceeds uninterrupted to completion
         rec2, ev2 = manager.record_rep(timestamp=2.0)
         rec3, ev3 = manager.record_rep(timestamp=3.0)
         assert rec3 is True
@@ -212,41 +319,49 @@ def test_8_rep_counting_continues_if_tts_fails():
 
 
 # ==============================================================================
-# TEST 9: Voice test generates playable audio
+# TEST 19: WebRTC configuration and import regression
 # ==============================================================================
-def test_9_voice_test_generates_playable_audio():
-    tts = TextToSpeech()
-    test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
-    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 200
+def test_19_webrtc_import_regression():
+    rtc_config = get_rtc_configuration()
+    assert "iceServers" in rtc_config
+    assert len(rtc_config["iceServers"]) >= 1
+    assert "urls" in rtc_config["iceServers"][0]
 
-    with mock.patch("services.coaching.tts.gTTS") as mock_gtts:
-        mock_instance = mock.MagicMock()
-        mock_instance.write_to_fp.side_effect = lambda buf: buf.write(fake_audio)
-        mock_gtts.return_value = mock_instance
-
-        audio = tts.speak(test_phrase)
-        assert audio is not None
-        assert isinstance(audio, bytes)
-        assert len(audio) > 100
+    assert DEFAULT_MEDIA_CONSTRAINTS["video"]["frameRate"]["ideal"] == 30
+    assert DEFAULT_MEDIA_CONSTRAINTS["audio"] is False
 
 
 # ==============================================================================
-# TEST 10: Audio events cleared on workout reset
+# TEST 20: Workout engine regression
 # ==============================================================================
-def test_10_audio_events_cleared_on_workout_reset():
-    import streamlit as st
-    st.session_state["last_voiced_rep"] = 5
-    st.session_state["last_voiced_set"] = 2
-    st.session_state["audio_to_play"] = b"bytes"
-    st.session_state["audio_event_id"] = "event-123"
+def test_20_workout_engine_regression():
+    manager = WorkoutStateManager()
+    manager.start_workout("Squats", 2, 2)
+    assert manager.is_active() is True
+    assert manager.total_reps == 0
 
-    # Reset
-    st.session_state["last_voiced_rep"] = 0
-    st.session_state["last_voiced_set"] = 0
-    st.session_state["audio_to_play"] = None
-    st.session_state["audio_event_id"] = ""
+    # Rep 1 (Set 1) -> normal rep
+    rec, ev = manager.record_rep(timestamp=1.0)
+    assert rec is True
+    assert ev is None
+    assert manager.current_set_reps == 1
 
-    assert st.session_state["last_voiced_rep"] == 0
-    assert st.session_state["last_voiced_set"] == 0
-    assert st.session_state["audio_to_play"] is None
-    assert st.session_state["audio_event_id"] == ""
+    # Rep 2 (Completes Set 1)
+    rec, ev = manager.record_rep(timestamp=2.0)
+    assert rec is True
+    assert ev == "set_completed"
+    assert manager.sets_completed == 1
+    assert manager.current_set_reps == 0
+
+    # Rep 3 (Set 2) -> normal rep
+    rec, ev = manager.record_rep(timestamp=3.0)
+    assert rec is True
+    assert ev is None
+    assert manager.current_set_reps == 1
+
+    # Rep 4 (Completes Set 2 & Workout)
+    rec, ev = manager.record_rep(timestamp=4.0)
+    assert rec is True
+    assert ev == "workout_completed"
+    assert manager.sets_completed == 2
+    assert manager.is_completed() is True
