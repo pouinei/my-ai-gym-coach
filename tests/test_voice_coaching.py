@@ -515,9 +515,9 @@ def test_24_no_replacement_of_currently_playing_audio():
 
 
 # ==============================================================================
-# TEST 25: Stale form correction purged when form recovers to Good
+# TEST 25: Valid queued correction preserved even if form recovers to Good
 # ==============================================================================
-def test_25_stale_queue_purged_on_form_recovery():
+def test_25_valid_queued_correction_preserved_on_form_transition():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     pipeline = VoicePipeline(coach, tts)
@@ -531,20 +531,22 @@ def test_25_stale_queue_purged_on_form_recovery():
         "started_at": t0,
     }
 
-    # An old form correction was queued at t0
+    # A valid form correction was queued during rep movement at t0 + 1.0
     pipeline.queue.append({
-        "event_id": "stale-error-cue",
+        "event_id": "flaw-cue",
         "audio_bytes": b"\xff\xfb\x90\x00" + b"\x00" * 150,
-        "text": "Your hips are dropping below your body alignment.",
-        "duration": 6.0,
-        "issue": "Hips are sagging down",
-        "enqueued_at": t0,
+        "text": "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement.",
+        "duration": 5.0,
+        "issue": "Uneven arm movement",
+        "enqueued_at": t0 + 1.0,
     })
 
-    # At t0 + 4.5s (after active cue finishes), user's form is now "Good"!
+    # At t0 + 4.5s (after active cue finishes), athlete lowered weights so current_form_status is "Good"
     active = pipeline.get_active_audio(current_form_status="Good", now=t0 + 4.5)
-    # The stale error cue was discarded because form is already Good!
-    assert active is None
+    # The valid form correction must NOT be discarded; it must be delivered!
+    assert active is not None
+    assert active[2] == "flaw-cue"
+    assert "unevenly" in active[1].lower()
     assert len(pipeline.queue) == 0
 
 
@@ -578,3 +580,116 @@ def test_27_form_status_and_voice_message_consistency():
     assert m_good["form_status"] == "Good"
     # Form correction text is encouraging, never an error complaint
     assert "clean" in m_good["form_correction"].lower() or "adjustment" in m_good["form_correction"].lower() or "maintain" in m_good["form_correction"].lower()
+
+
+# ==============================================================================
+# TEST 28: Stale queue items purged after timeout (> 20s)
+# ==============================================================================
+def test_28_stale_queue_purged_after_timeout():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    pipeline = VoicePipeline(coach, tts)
+
+    t0 = 400.0
+    pipeline.queue.append({
+        "event_id": "ancient-cue",
+        "audio_bytes": b"\xff\xfb\x90\x00" + b"\x00" * 150,
+        "text": "Very old cue from minutes ago",
+        "duration": 4.0,
+        "enqueued_at": t0,
+    })
+
+    # Evaluated 25 seconds later (> 20s threshold)
+    active = pipeline.get_active_audio(current_form_status="Good", now=t0 + 25.0)
+    assert active is None
+    assert len(pipeline.queue) == 0
+
+
+# ==============================================================================
+# TEST 29: Shoulder press uneven arm movement exact text verification
+# ==============================================================================
+def test_29_shoulder_press_uneven_arm_movement_exact_text():
+    from tests.test_form_correction import make_shoulder_press_landmarks
+    det = ShoulderPressDetector()
+    # Left arm at 130 deg, Right arm at 85 deg -> asymmetry = 45 deg > 25.0
+    metrics = det.process(make_shoulder_press_landmarks(130.0, 85.0, 175.0))
+    assert metrics["form_status"] == "Needs Correction"
+    assert metrics["form_issue"] == "Uneven arm movement"
+
+    expected = (
+        "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. "
+        "Push both arms upward at the same time and keep them at the same height. "
+        "Keep your core stable and control the movement. Try again."
+    )
+    assert metrics["form_correction"] == expected
+
+    cue = get_deterministic_cue("ongoing_form_check", metrics["form_issue"], "Shoulder Press")
+    assert cue == expected
+
+
+# ==============================================================================
+# TEST 30: Form corrections bypass minor cue cooldown and are enqueued
+# ==============================================================================
+def test_30_form_corrections_bypass_minor_cue_cooldown():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 20000
+    expected_phrase = (
+        "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. "
+        "Push both arms upward at the same time and keep them at the same height. "
+        "Keep your core stable and control the movement. Try again."
+    )
+    tts._cache[f"en:{expected_phrase.lower()}"] = fake_audio
+
+    pipeline = VoicePipeline(coach, tts)
+    t0 = 500.0
+
+    # Start a previous announcement playing
+    pipeline.current_playing = {
+        "event_id": "intro",
+        "audio_bytes": fake_audio,
+        "text": "Get ready to begin!",
+        "duration": 6.0,
+        "started_at": t0,
+    }
+    pipeline.last_spoken_at = t0
+
+    # Only 1.0 second later (well within normal 4.0s minor cue cooldown), form mistake occurs
+    with mock.patch("time.time", return_value=t0 + 1.0):
+        res = pipeline.process_event("ongoing_form_check", "Shoulder Press", {
+            "form_status": "Needs Correction",
+            "form_issue": "Uneven arm movement",
+            "form_correction": expected_phrase,
+        })
+        # Audio was not dropped! It returned currently playing and placed the correction in queue
+        assert res is not None
+        assert res[2] == "intro"
+        assert len(pipeline.queue) == 1
+        assert pipeline.queue[0]["text"] == expected_phrase
+
+
+# ==============================================================================
+# TEST 31: Runtime audio diagnostics state tracking
+# ==============================================================================
+def test_31_audio_diagnostics_state_tracking():
+    import streamlit as st
+    from services.state.session_defaults import initial_session_defaults
+    from services.tracking.metrics import _apply_voice_result
+
+    initial_session_defaults()
+
+    fake_bytes = b"\xff\xfb\x90\x00" + b"\x00" * 300
+    _apply_voice_result(
+        (fake_bytes, "Sample spoken text", "ev-test-123"),
+        event_name="form_correction",
+        issue_text="Uneven arm movement",
+    )
+
+    assert st.session_state.audio_diag_event_id == "ev-test-123"
+    assert st.session_state.audio_diag_event_name == "form_correction"
+    assert st.session_state.audio_diag_issue == "Uneven arm movement"
+    assert st.session_state.audio_diag_tts_status == "SUCCESS"
+    assert st.session_state.audio_diag_validation_status == "VALID_MP3"
+    assert st.session_state.audio_diag_payload_bytes == len(fake_bytes)
+    assert st.session_state.audio_diag_playback_status == "DELIVERED"
+

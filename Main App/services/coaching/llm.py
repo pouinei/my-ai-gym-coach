@@ -49,7 +49,7 @@ def get_deterministic_cue(event: str, issue: Optional[str] = None, exercise: Opt
         if "arch" in cleaned_issue:
             return "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
         elif "uneven" in cleaned_issue or "asymmetry" in cleaned_issue:
-            return "Your arms are pressing unevenly. Balance your strength by pushing both dumbbells upward at the exact same time and height."
+            return "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. Push both arms upward at the same time and keep them at the same height. Keep your core stable and control the movement. Try again."
         elif "fast" in cleaned_issue or "speed" in cleaned_issue:
             return "You are pressing too quickly. Control the movement with a steady two-second press up and a controlled lowering down."
         elif "valgus" in cleaned_issue or "caved" in cleaned_issue or ("knee" in cleaned_issue and "inward" in cleaned_issue):

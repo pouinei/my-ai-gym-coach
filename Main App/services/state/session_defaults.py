@@ -39,6 +39,20 @@ def initial_session_defaults():
         "voice_test_id": "",
         "last_played_test_id": "",
 
+        # Audio Engine & Voice Diagnostics
+        "audio_diag_event_id": "None",
+        "audio_diag_event_name": "None",
+        "audio_diag_issue": "None",
+        "audio_diag_tts_status": "Ready",
+        "audio_diag_validation_status": "Ready",
+        "audio_diag_payload_bytes": 0,
+        "audio_diag_queue_len": 0,
+        "audio_diag_playback_status": "IDLE",
+        "audio_diag_delivered_at": "N/A",
+        "audio_diag_completed_at": "N/A",
+        "audio_diag_mute_status": "ACTIVE",
+        "audio_diag_last_error": "None",
+
         # Form Feedback & Quality Tracking
         "valid_reps": 0,
         "invalid_reps": 0,

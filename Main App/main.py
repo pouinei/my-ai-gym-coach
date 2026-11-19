@@ -432,6 +432,26 @@ def main():
 
     st.divider()
 
+    with st.expander("🎧 Audio Engine & Voice Diagnostics", expanded=False):
+        col_d1, col_d2, col_d3 = st.columns(3)
+        with col_d1:
+            st.markdown(f"**Playback State:** `{st.session_state.get('audio_diag_playback_status', 'IDLE')}`")
+            ev_id = st.session_state.get('audio_diag_event_id', 'None')
+            display_id = f"{ev_id[:8]}..." if (ev_id and ev_id != 'None') else "None"
+            st.markdown(f"**Active Event ID:** `{display_id}`")
+            st.markdown(f"**Event Name:** `{st.session_state.get('audio_diag_event_name', 'None')}`")
+            st.markdown(f"**Mute Status:** `{st.session_state.get('audio_diag_mute_status', 'ACTIVE')}`")
+        with col_d2:
+            st.markdown(f"**TTS Engine Status:** `{st.session_state.get('audio_diag_tts_status', 'Ready')}`")
+            st.markdown(f"**Validation Status:** `{st.session_state.get('audio_diag_validation_status', 'Ready')}`")
+            st.markdown(f"**Payload Size:** `{st.session_state.get('audio_diag_payload_bytes', 0):,} bytes`")
+            st.markdown(f"**Queue Depth:** `{st.session_state.get('audio_diag_queue_len', 0)} pending`")
+        with col_d3:
+            st.markdown(f"**Delivered At:** `{st.session_state.get('audio_diag_delivered_at', 'N/A')}`")
+            st.markdown(f"**Completed At:** `{st.session_state.get('audio_diag_completed_at', 'N/A')}`")
+            st.markdown(f"**Detected Flaw:** `{st.session_state.get('audio_diag_issue', 'None')}`")
+            st.markdown(f"**Last Error:** `{st.session_state.get('audio_diag_last_error', 'None')}`")
+
     st.markdown("#### Workout History")
 
     user_id = st.session_state.get("user_id", 0)

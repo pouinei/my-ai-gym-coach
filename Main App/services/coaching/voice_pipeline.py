@@ -1,5 +1,6 @@
 import time
 import uuid
+import base64
 import logging
 from typing import Optional, Tuple, Dict, Any, List
 import streamlit as st
@@ -65,6 +66,10 @@ class VoicePipeline:
         self.queue: List[Dict[str, Any]] = []
         self.current_playing: Optional[Dict[str, Any]] = None
 
+        # Form Correction Tracking & Anti-Spam
+        self.last_form_issue: Optional[str] = None
+        self.last_form_issue_time: float = 0.0
+
         if precache:
             self._precache_standard_cues()
 
@@ -127,8 +132,8 @@ class VoicePipeline:
         """
         Servicing loop for the audio queue:
         - If current audio is still playing, keeps it mounted in DOM.
-        - When current audio finishes, dequeues the next announcement.
-        - Automatically discards stale form correction cues if form is already Good.
+        - When current audio finishes, dequeues the next announcement in FIFO order.
+        - Preserves valid corrections from current workout movements. Only drops items older than 20s.
         """
         if self.muted:
             return None
@@ -148,12 +153,8 @@ class VoicePipeline:
             item = self.queue.pop(0)
             enqueued_at = item.get("enqueued_at", now)
 
-            # If user already corrected form to Good, discard pending negative corrections!
-            if item.get("issue") and current_form_status == "Good" and (now - enqueued_at) > 1.0:
-                continue
-
-            # If item is older than 12 seconds, discard as stale
-            if (now - enqueued_at) > 12.0:
+            # If item is older than 20 seconds, discard as stale
+            if (now - enqueued_at) > 20.0:
                 continue
 
             # Valid item ready for playback
@@ -216,6 +217,9 @@ class VoicePipeline:
                 return "You are moving your elbows away from your body. Keep your elbows close to your sides, avoid swinging your torso, and curl the weight slowly."
 
         elif exercise == "Shoulder Press":
+            arm_asymmetry = metrics.get("arm_asymmetry", 0.0)
+            if isinstance(arm_asymmetry, (int, float)) and arm_asymmetry > 25.0:
+                return "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. Push both arms upward at the same time and keep them at the same height. Keep your core stable and control the movement. Try again."
             back_arch = metrics.get("back_arch_status", "")
             if back_arch == "Excessive Arch":
                 return "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
@@ -256,13 +260,23 @@ class VoicePipeline:
                 stage_cue = STAGE_GUIDANCE_CUES[exercise][stage]
                 self.last_stage = stage
 
-        # Rate-limiting / anti-spam for minor cues
-        if not is_major_event:
+        # Rate-limiting / anti-spam / deduplication
+        if is_major_event:
+            pass
+        elif issue:
+            # Form corrections: high priority!
+            # Never throttle form corrections using generic stage-cue cooldown (last_spoken_at).
+            # Deduplicate only if identical issue was processed within 6.0 seconds.
+            if self.last_form_issue == issue and (now - self.last_form_issue_time) < 6.0:
+                return None
+            self.last_form_issue = issue
+            self.last_form_issue_time = now
+        else:
             if (now - self.last_spoken_at) < 4.0:
                 return None
 
             # Resume positive feedback when form was corrected
-            if not issue and not stage_cue and self.had_form_issue and metrics.get("form_status") == "Good":
+            if not stage_cue and self.had_form_issue and metrics.get("form_status") == "Good":
                 self.had_form_issue = False
                 issue = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
@@ -327,6 +341,7 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
     2. Keeps audio mounted in DOM during Streamlit 250ms reruns without restarting.
     3. Triggers autoplay=True on first render of a new event_id.
     4. Preserves native HTML5 Play/Pause/Volume controls if browser blocks autoplay.
+    5. Injects an isolated fallback player inside components.html without cross-origin exceptions.
     """
     if not audio_bytes or not validate_audio_bytes(audio_bytes):
         return
@@ -338,31 +353,45 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
         st.session_state["last_played_audio_event_id"] = event_id
 
     # Always render the audio widget so Streamlit does NOT unmount it on 250ms reruns!
-    # Pass autoplay=True on first render, and autoplay=False on subsequent 250ms reruns to avoid restarting playback.
     st.audio(audio_bytes, format="audio/mp3", autoplay=is_first_render)
 
     if is_first_render:
+        b64 = base64.b64encode(audio_bytes).decode("ascii")
         components.html(
-            """
+            f"""
+            <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; gap: 8px;">
+                <audio id="apna-voice-el" src="data:audio/mp3;base64,{b64}" preload="auto" autoplay></audio>
+                <button id="apna-voice-btn" onclick="startAudio()" style="display:none; background:#ff4b4b; color:#ffffff; border:none; padding:4px 10px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer;">
+                    ▶ Click to Hear Coach Voice
+                </button>
+            </div>
             <script>
-            (function() {
-                try {
-                    const parentDoc = window.parent.document;
-                    const audios = parentDoc.querySelectorAll('audio');
-                    if (audios.length > 0) {
-                        const a = audios[audios.length - 1];
-                        a.volume = 1.0;
-                        a.muted = false;
-                        const p = a.play();
-                        if (p !== undefined) {
-                            p.catch(function(e) {
-                                console.warn('[Apna Coach Voice] Autoplay waiting for user interaction:', e);
-                            });
-                        }
-                    }
-                } catch (err) {}
-            })();
+            function startAudio() {{
+                const el = document.getElementById('apna-voice-el');
+                if (el) {{
+                    el.play().then(function() {{
+                        const btn = document.getElementById('apna-voice-btn');
+                        if (btn) btn.style.display = 'none';
+                    }}).catch(function(err) {{
+                        console.warn('[Apna Voice] Manual playback error:', err);
+                    }});
+                }}
+            }}
+            (function() {{
+                const el = document.getElementById('apna-voice-el');
+                if (el) {{
+                    el.volume = 1.0;
+                    const p = el.play();
+                    if (p !== undefined) {{
+                        p.catch(function(err) {{
+                            console.warn('[Apna Voice] Browser blocked autoplay; showing manual button:', err);
+                            const btn = document.getElementById('apna-voice-btn');
+                            if (btn) btn.style.display = 'inline-block';
+                        }});
+                    }}
+                }}
+            }})();
             </script>
             """,
-            height=0,
+            height=28,
         )

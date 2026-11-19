@@ -3,9 +3,10 @@ import time
 import uuid
 from services.config.workout_config import METRICS_FIELDS
 from services.persistence.exercise_repository import add_exercise
+from services.coaching.tts import validate_audio_bytes
 
 
-def _apply_voice_result(result):
+def _apply_voice_result(result, event_name="voice_cue", issue_text=""):
     if not result:
         return
     if len(result) == 3:
@@ -19,6 +20,16 @@ def _apply_voice_result(result):
     st.session_state.audio_to_play = audio_bytes
     st.session_state.coach_feedback = text
     st.session_state.audio_event_id = event_id
+
+    # Update runtime audio diagnostics
+    st.session_state.audio_diag_event_id = event_id
+    st.session_state.audio_diag_event_name = event_name
+    st.session_state.audio_diag_issue = issue_text or text
+    st.session_state.audio_diag_tts_status = "SUCCESS"
+    st.session_state.audio_diag_validation_status = "VALID_MP3" if validate_audio_bytes(audio_bytes) else "INVALID"
+    st.session_state.audio_diag_payload_bytes = len(audio_bytes)
+    st.session_state.audio_diag_delivered_at = time.strftime("%H:%M:%S")
+    st.session_state.audio_diag_playback_status = "DELIVERED"
 
 
 def sync_metrics_update(context):
@@ -102,7 +113,7 @@ def sync_metrics_update(context):
                 exercise=exercise,
                 metrics=latest_metrics,
             )
-            _apply_voice_result(result)
+            _apply_voice_result(result, event_name="rep_completed", issue_text=f"Rep {total_reps} completed")
 
     # 1b. Rep invalid voice notification (fires when a repetition was rejected due to form violation)
     current_invalid = latest_metrics.get("invalid_reps", 0)
@@ -115,7 +126,7 @@ def sync_metrics_update(context):
                 exercise=exercise,
                 metrics=latest_metrics,
             )
-            _apply_voice_result(result)
+            _apply_voice_result(result, event_name="rep_invalid", issue_text=latest_metrics.get("form_issue", "Form violation"))
 
     # 2. Database persistence for newly completed sets (idempotent, strictly capped)
     last_saved_sets = st.session_state.get("last_saved_sets_completed", 0)
@@ -134,7 +145,7 @@ def sync_metrics_update(context):
                 exercise=exercise,
                 metrics=latest_metrics,
             )
-            _apply_voice_result(result)
+            _apply_voice_result(result, event_name="set_completed", issue_text=f"Set {sets_completed} completed")
 
         st.session_state.set_cycle_started_at = now_ts
         st.session_state.last_saved_sets_completed = sets_completed
@@ -151,7 +162,7 @@ def sync_metrics_update(context):
                 exercise=exercise,
                 metrics=latest_metrics,
             )
-            _apply_voice_result(result)
+            _apply_voice_result(result, event_name="workout_completed", issue_text="Workout completed")
 
     # 4. Pose detection warnings
     pose_detected = latest_metrics.get("pose_detected", True)
@@ -161,7 +172,7 @@ def sync_metrics_update(context):
             exercise=exercise,
             metrics={"issue": "No pose detected! Please step into the camera frame."},
         )
-        _apply_voice_result(result)
+        _apply_voice_result(result, event_name="no_pose_detected", issue_text="No pose detected")
 
     # 5. Form coaching and movement guidance
     if st.session_state.get("voice_pipeline"):
@@ -170,17 +181,30 @@ def sync_metrics_update(context):
             exercise=exercise,
             metrics=latest_metrics,
         )
-        _apply_voice_result(result)
+        if result:
+            _apply_voice_result(result, event_name="form_correction", issue_text=latest_metrics.get("form_issue", ""))
 
     # 6. Service the Audio Queue: ensure currently playing speech finishes completely
     # and pop next pending announcement without audio clipping or interruption
     if st.session_state.get("voice_pipeline"):
-        active_audio = st.session_state.voice_pipeline.get_active_audio(
+        vp = st.session_state.voice_pipeline
+        now = time.time()
+        active_audio = vp.get_active_audio(
             current_form_status=st.session_state.form_status,
-            now=time.time(),
+            now=now,
         )
         if active_audio:
-            _apply_voice_result(active_audio)
+            _apply_voice_result(active_audio, event_name="queue_delivery", issue_text=active_audio[1])
+
+        # Maintain dynamic queue and playback diagnostics
+        st.session_state.audio_diag_queue_len = len(vp.queue)
+        st.session_state.audio_diag_mute_status = "MUTED" if vp.muted else "ACTIVE"
+
+        if vp.is_playing(now):
+            st.session_state.audio_diag_playback_status = "PLAYING"
+        elif st.session_state.get("audio_diag_playback_status") in ("PLAYING", "DELIVERED"):
+            st.session_state.audio_diag_playback_status = "COMPLETED"
+            st.session_state.audio_diag_completed_at = time.strftime("%H:%M:%S")
 
     # 7. Form Status Consistency: never show Form Status Good while displaying an old error correction
     if st.session_state.form_status == "Good":

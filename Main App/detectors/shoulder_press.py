@@ -196,7 +196,7 @@ class ShoulderPressDetector(BaseExercise):
             if self._max_arm_asymmetry_in_rep > 25.0:
                 flaws.append((
                     "Uneven arm movement",
-                    "Your arms are pressing unevenly. Balance your strength by pushing both dumbbells upward at the exact same time and height."
+                    "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. Push both arms upward at the same time and keep them at the same height. Keep your core stable and control the movement. Try again."
                 ))
             if rep_duration < 0.8:
                 flaws.append((
@@ -239,7 +239,7 @@ class ShoulderPressDetector(BaseExercise):
             elif both_arms_visible and arm_asymmetry > 25.0:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Uneven arm movement"
-                self.form_correction = "Your arms are pressing unevenly. Balance your strength by pushing both dumbbells upward at the exact same time and height."
+                self.form_correction = "Your arms are pressing unevenly. This can create an imbalance in your shoulder movement. Push both arms upward at the same time and keep them at the same height. Keep your core stable and control the movement. Try again."
             elif self.state_machine.stage == Stage.STARTING and elbow_angle < 65.0:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Elbows dropped too low at start"
