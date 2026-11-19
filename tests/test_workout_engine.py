@@ -530,3 +530,23 @@ def test_l_sync_metrics_safety():
     assert st.session_state["reps"] == 3
     assert st.session_state["workout_completed"] is True
 
+
+# ==============================================================================
+# TEST M: WebRTC Symbols and Configuration Availability
+# ==============================================================================
+def test_m_webrtc_symbols_and_config():
+    import main
+    assert hasattr(main, "webrtc_streamer")
+    assert main.webrtc_streamer is not None
+    assert hasattr(main, "WebRtcMode")
+    assert main.WebRtcMode is not None
+    assert hasattr(main, "VideoProcessorClass")
+    assert hasattr(main, "sync_metrics_update")
+
+    from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
+    cfg = get_rtc_configuration()
+    assert "iceServers" in cfg
+    assert len(cfg["iceServers"]) > 0
+    assert "video" in DEFAULT_MEDIA_CONSTRAINTS
+
+

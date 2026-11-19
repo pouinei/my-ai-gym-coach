@@ -20,6 +20,17 @@ from services.config.workout_config import EXERCISE_OPTIONS
 from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
 from services.ui.style_loader import load_css, inject_local_font, inject_webrtc_styles
 from services.persistence.exercise_repository import init_db, save_workout_session, get_users_exercises
+
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode
+    WEBRTC_IMPORT_ERROR = None
+except Exception as _e:
+    webrtc_streamer = None
+    WebRtcMode = None
+    WEBRTC_IMPORT_ERROR = str(_e)
+
+from services.vision.exercise_video_processor import VideoProcessorClass
+from services.tracking.metrics import sync_metrics_update
 from groq import Groq
 from services.coaching.llm import LLMCoach
 from services.coaching.tts import TextToSpeech
@@ -232,6 +243,13 @@ def main():
             unsafe_allow_html=True,
         )
     else:
+        if webrtc_streamer is None or WebRtcMode is None:
+            st.error(
+                f"🚨 **WebRTC Module Error:** `streamlit-webrtc` could not be loaded ({WEBRTC_IMPORT_ERROR}). "
+                "Please verify that `streamlit-webrtc` is installed in your Python environment."
+            )
+            return
+
         rtc_config = get_rtc_configuration()
 
         context = webrtc_streamer(
