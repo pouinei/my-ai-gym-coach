@@ -184,13 +184,25 @@ class ShoulderPressDetector(BaseExercise):
             # Evaluate form violations for rep validation
             flaws = []
             if self._min_back_angle_in_rep < 145.0:
-                flaws.append(("Excessive lower-back arch", "Don't arch your lower back. Brace your core."))
+                flaws.append((
+                    "Excessive lower-back arch",
+                    "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
+                ))
             if self._max_elbow_angle_in_rep < 150.0:
-                flaws.append(("Incomplete elbow extension overhead", "Extend your arms fully overhead."))
+                flaws.append((
+                    "Incomplete elbow extension overhead",
+                    "Your arms are not extending fully overhead. To complete the full movement, press the weights all the way up until your elbows are fully locked out overhead."
+                ))
             if self._max_arm_asymmetry_in_rep > 25.0:
-                flaws.append(("Uneven arm movement", "Press both arms evenly and symmetrically."))
+                flaws.append((
+                    "Uneven arm movement",
+                    "Your arms are pressing unevenly. Balance your strength by pushing both dumbbells upward at the exact same time and height."
+                ))
             if rep_duration < 0.8:
-                flaws.append(("Movement was too fast", "Slow down your movement and control the press."))
+                flaws.append((
+                    "Movement was too fast",
+                    "You are pressing too quickly. Control the movement with a steady two-second press up and a controlled lowering down."
+                ))
 
             if flaws:
                 # Reject rep
@@ -210,7 +222,7 @@ class ShoulderPressDetector(BaseExercise):
                 rep_invalid = False
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Good form! Rep completed."
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             # Reset tracking for next rep
             self._rep_start_time = current_time
@@ -223,19 +235,19 @@ class ShoulderPressDetector(BaseExercise):
             if back_arch_status == "Excessive Arch":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Excessive lower-back arch"
-                self.form_correction = "Don't arch your lower back. Brace your core."
+                self.form_correction = "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
             elif both_arms_visible and arm_asymmetry > 25.0:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Uneven arm movement"
-                self.form_correction = "Press both arms evenly."
+                self.form_correction = "Your arms are pressing unevenly. Balance your strength by pushing both dumbbells upward at the exact same time and height."
             elif self.state_machine.stage == Stage.STARTING and elbow_angle < 65.0:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Elbows dropped too low at start"
-                self.form_correction = "Keep your elbows at shoulder level to start."
+                self.form_correction = "Your elbows are not in the correct position. Keep both elbows aligned with your shoulders, brace your core, and press the weights straight overhead. Avoid arching your lower back."
             else:
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Maintain this form!"
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
         if elbow_angle >= self.state_machine.inflection_threshold:
             extension_status = "FULL EXTENSION"

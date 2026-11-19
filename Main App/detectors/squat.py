@@ -162,13 +162,25 @@ class SquatDetector(BaseExercise):
         if cycle_completed:
             flaws = []
             if back_visible and self._min_back_angle_in_rep < 120.0:
-                flaws.append(("Excessive forward trunk lean", "Keep your chest up and back straight."))
+                flaws.append((
+                    "Excessive forward trunk lean",
+                    "Your upper body is leaning too far forward. Keep your chest lifted, engage your core, and look straight ahead throughout the squat."
+                ))
             if self._min_knee_angle_in_rep > 105.0:
-                flaws.append(("Insufficient squat depth", "Squat a little deeper for full range of motion."))
+                flaws.append((
+                    "Insufficient squat depth",
+                    "Your squat depth is too shallow. Squat a little deeper for full range of motion. Slowly bend your knees and push your hips backward until you reach a comfortable depth. Keep your heels on the floor and your chest lifted."
+                ))
             if self._valgus_detected_in_rep:
-                flaws.append(("Knees caving inward (valgus)", "Keep your knees aligned with your toes; push knees outward."))
+                flaws.append((
+                    "Knees caving inward (valgus)",
+                    "Your knees are caving inward during the squat. This places strain on your joints. Actively drive your knees outward in line with your toes as you descend and rise."
+                ))
             if knee_angle < 155.0:
-                flaws.append(("Incomplete standing extension", "Stand all the way up to finish the rep."))
+                flaws.append((
+                    "Incomplete standing extension",
+                    "You did not stand all the way up. Extend your hips and knees fully at the top and squeeze your glutes before your next rep."
+                ))
 
             if flaws:
                 self.invalid_reps += 1
@@ -186,7 +198,7 @@ class SquatDetector(BaseExercise):
                 rep_invalid = False
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Good form! Rep completed."
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             self._rep_start_time = current_time
             self._min_knee_angle_in_rep = knee_angle
@@ -198,19 +210,19 @@ class SquatDetector(BaseExercise):
             if back_visible and back_angle < 120.0:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Excessive forward trunk lean"
-                self.form_correction = "Keep your chest up and back straight."
+                self.form_correction = "Your upper body is leaning too far forward. Keep your chest lifted, engage your core, and look straight ahead throughout the squat."
             elif valgus_active:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Knees caving inward (valgus)"
-                self.form_correction = "Keep your knees aligned with your toes."
+                self.form_correction = "Your knees are caving inward during the squat. This places strain on your joints. Actively drive your knees outward in line with your toes as you descend and rise."
             elif knee_angle > 105.0 and self.stage == "inflected":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Insufficient squat depth"
-                self.form_correction = "Squat a little deeper."
+                self.form_correction = "Your squat depth is too shallow. Squat a little deeper for full range of motion. Slowly bend your knees and push your hips backward until you reach a comfortable depth. Keep your heels on the floor and your chest lifted."
             else:
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Maintain this form!"
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
         if knee_angle <= self.state_machine.inflection_threshold:
             depth_status = "GOOD DEPTH"

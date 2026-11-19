@@ -118,6 +118,7 @@ def main():
                 st.session_state.last_voiced_set = 0
 
                 if st.session_state.voice_pipeline:
+                    st.session_state.voice_pipeline.clear_queue()
                     result = st.session_state.voice_pipeline.process_event(
                         event="workout_started",
                         exercise=plan_exercise,
@@ -159,6 +160,7 @@ def main():
                     )
                 
                 if st.session_state.voice_pipeline:
+                    st.session_state.voice_pipeline.clear_queue()
                     result = st.session_state.voice_pipeline.process_event(
                         event="workout_completed",
                         exercise=exercise,

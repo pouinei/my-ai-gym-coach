@@ -3,9 +3,11 @@ import unittest.mock as mock
 from pathlib import Path
 import pytest
 
-# Ensure Main App is in sys.path
+# Ensure Main App and Project root are in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MAIN_APP_DIR = PROJECT_ROOT / "Main App"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(MAIN_APP_DIR) not in sys.path:
     sys.path.insert(0, str(MAIN_APP_DIR))
 
@@ -14,6 +16,7 @@ from services.coaching.llm import LLMCoach, get_deterministic_cue
 from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
 from services.state.workout_state import WorkoutStateManager
 from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
+from detectors.shoulder_press import ShoulderPressDetector
 
 
 # ==============================================================================
@@ -155,7 +158,7 @@ def test_10_duplicate_audio_event_prevention():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    tts._cache["en:good job! rep completed."] = fake_audio
+    tts._cache["en:good job! rep completed. keep that steady pace and control."] = fake_audio
 
     pipeline = VoicePipeline(coach, tts)
 
@@ -165,7 +168,7 @@ def test_10_duplicate_audio_event_prevention():
     assert len(audio1) > 0
     assert event_id1 is not None
 
-    # Immediate second call within 3 seconds is debounced
+    # Immediate second call within cooldown is debounced
     res2 = pipeline.process_event("rep_completed", "Squats", {"reps": 1})
     assert res2 is None
 
@@ -246,7 +249,7 @@ def test_15_rep_completion_voice_announcement():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    tts._cache["en:good job! rep completed."] = fake_audio
+    tts._cache["en:good job! rep completed. keep that steady pace and control."] = fake_audio
 
     pipeline = VoicePipeline(coach, tts)
     result = pipeline.process_event("rep_completed", "Squats", {"reps": 1})
@@ -263,7 +266,7 @@ def test_16_set_completion_announcement():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    tts._cache["en:awesome work! set completed. take a breath."] = fake_audio
+    tts._cache["en:awesome work! set completed. take a breath, recover, and prepare for your next set."] = fake_audio
 
     pipeline = VoicePipeline(coach, tts)
     result = pipeline.process_event("set_completed", "Squats", {"sets_completed": 1})
@@ -280,7 +283,7 @@ def test_17_workout_completion_announcement():
     coach = LLMCoach(groq_client=None)
     tts = TextToSpeech()
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
-    tts._cache["en:workout completed! outstanding job!"] = fake_audio
+    tts._cache["en:workout completed! outstanding job! you crushed every set today."] = fake_audio
 
     pipeline = VoicePipeline(coach, tts)
     result = pipeline.process_event("workout_completed", "Push-ups", {})
@@ -365,3 +368,213 @@ def test_20_workout_engine_regression():
     assert ev == "workout_completed"
     assert manager.sets_completed == 2
     assert manager.is_completed() is True
+
+
+# ==============================================================================
+# TEST 21: Full-sentence natural coaching explanations for all exercises
+# ==============================================================================
+def test_21_full_sentence_generation_all_exercises():
+    coach = LLMCoach(groq_client=None)
+
+    # 1. Shoulder Press
+    cue_sp = coach.give_feedback("ongoing_form_check", issue="Elbows dropped too low at start", exercise="Shoulder Press")
+    assert "Your elbows are not in the correct position" in cue_sp
+    assert "brace your core" in cue_sp
+    assert len(cue_sp.split()) >= 15
+
+    # 2. Squats
+    cue_sq = coach.give_feedback("ongoing_form_check", issue="Insufficient squat depth", exercise="Squats")
+    assert "Your squat depth is too shallow" in cue_sq
+    assert "heels on the floor" in cue_sq
+    assert len(cue_sq.split()) >= 15
+
+    # 3. Push-ups
+    cue_pu = coach.give_feedback("ongoing_form_check", issue="Hips are sagging down", exercise="Push-ups")
+    assert "Your hips are dropping below your body alignment" in cue_pu
+    assert "straight line" in cue_pu
+    assert len(cue_pu.split()) >= 15
+
+    # 4. Biceps Curls
+    cue_bc = coach.give_feedback("ongoing_form_check", issue="Excessive elbow drift", exercise="Biceps Curls (Dumbbell)")
+    assert "You are moving your elbows away from your body" in cue_bc
+    assert "elbows close to your sides" in cue_bc
+    assert len(cue_bc.split()) >= 15
+
+    # 5. Lunges
+    cue_lg = coach.give_feedback("ongoing_form_check", issue="Losing balance / torso sway", exercise="Lunges")
+    assert "Your balance is unstable" in cue_lg
+    assert "controlled step forward" in cue_lg
+    assert len(cue_lg.split()) >= 15
+
+
+# ==============================================================================
+# TEST 22: Audio duration estimation and non-truncation
+# ==============================================================================
+def test_22_audio_non_truncation_duration():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    pipeline = VoicePipeline(coach, tts)
+
+    text = "Your squat depth is too shallow. Slowly bend your knees and push your hips backward until you reach a comfortable depth. Keep your heels on the floor and your chest lifted."
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 32000  # 32004 bytes = ~8.0s at 4000 B/s
+
+    duration = pipeline.estimate_duration(fake_audio, text)
+    # Never fixed short duration (< 4s); matches true byte length / word pacing
+    assert duration >= 8.0
+    assert duration <= 15.0
+
+
+# ==============================================================================
+# TEST 23: Audio queue sequencing and non-interruption
+# ==============================================================================
+def test_23_audio_queue_multiple_messages_sequential():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio1 = b"\xff\xfb\x90\x00" + b"\x00" * 20000  # ~5.0s
+    fake_audio2 = b"\xff\xfb\x90\x00" + b"\x00" * 24000  # ~6.0s
+
+    tts._cache["en:first speech sentence."] = fake_audio1
+    tts._cache["en:second speech sentence."] = fake_audio2
+
+    pipeline = VoicePipeline(coach, tts)
+    t0 = 100.0
+
+    # Start speech 1 at t0
+    pipeline.current_playing = {
+        "event_id": "ev-1",
+        "audio_bytes": fake_audio1,
+        "text": "First speech sentence.",
+        "duration": 5.0,
+        "started_at": t0,
+    }
+
+    # At t0 + 2.0s, pipeline is still playing speech 1
+    assert pipeline.is_playing(now=t0 + 2.0) is True
+
+    # Enqueue speech 2 while speech 1 is playing
+    pipeline.enqueue(
+        audio_bytes=fake_audio2,
+        text="Second speech sentence.",
+        event_id="ev-2",
+        duration=6.0,
+        event="set_completed",
+    )
+    assert len(pipeline.queue) == 1
+
+    # While still playing (t0 + 3.0s), get_active_audio returns speech 1 (NOT speech 2!)
+    active_mid = pipeline.get_active_audio(current_form_status="Good", now=t0 + 3.0)
+    assert active_mid is not None
+    assert active_mid[2] == "ev-1"  # Still playing speech 1!
+    assert len(pipeline.queue) == 1
+
+    # Once speech 1 finishes (t0 + 5.1s), get_active_audio pops speech 2 and plays it!
+    active_after = pipeline.get_active_audio(current_form_status="Good", now=t0 + 5.1)
+    assert active_after is not None
+    assert active_after[2] == "ev-2"  # Now playing speech 2!
+    assert active_after[1] == "Second speech sentence."
+    assert len(pipeline.queue) == 0
+
+
+# ==============================================================================
+# TEST 24: No replacement of active audio
+# ==============================================================================
+def test_24_no_replacement_of_currently_playing_audio():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    fake_audio1 = b"\xff\xfb\x90\x00" + b"\x00" * 30000
+    fake_audio2 = b"\xff\xfb\x90\x00" + b"\x00" * 30000
+
+    phrase1 = "Get ready to begin! Raise your dumbbells to shoulder height, brace your core, and press straight overhead without arching your back."
+    phrase2 = "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
+
+    tts._cache[f"en:{phrase1.lower()}"] = fake_audio1
+    tts._cache[f"en:{phrase2.lower()}"] = fake_audio2
+
+    pipeline = VoicePipeline(coach, tts)
+    t0 = 200.0
+
+    # Event 1 starts playing
+    res1 = pipeline.process_event("workout_started", "Shoulder Press", {})
+    assert res1 is not None
+    audio1, text1, id1 = res1
+    pipeline.current_playing["started_at"] = t0
+    pipeline.current_playing["duration"] = 7.0
+    pipeline.last_spoken_at = t0
+
+    # Event 2 triggered at t0 + 4.5s (after 4.0s cooldown, but while Event 1 still has 2.5s remaining)
+    with mock.patch("time.time", return_value=t0 + 4.5):
+        res2 = pipeline.process_event("ongoing_form_check", "Shoulder Press", {
+            "form_status": "Needs Correction",
+            "form_issue": "Excessive lower-back arch",
+        })
+        # Returned active audio is still Event 1; Event 2 was placed in queue!
+        assert res2 is not None
+        assert res2[2] == id1
+        assert len(pipeline.queue) == 1
+        assert pipeline.queue[0]["text"] == phrase2
+
+
+# ==============================================================================
+# TEST 25: Stale form correction purged when form recovers to Good
+# ==============================================================================
+def test_25_stale_queue_purged_on_form_recovery():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    pipeline = VoicePipeline(coach, tts)
+
+    t0 = 300.0
+    pipeline.current_playing = {
+        "event_id": "active-cue",
+        "audio_bytes": b"\xff\xfb\x90\x00" + b"\x00" * 150,
+        "text": "Active cue",
+        "duration": 4.0,
+        "started_at": t0,
+    }
+
+    # An old form correction was queued at t0
+    pipeline.queue.append({
+        "event_id": "stale-error-cue",
+        "audio_bytes": b"\xff\xfb\x90\x00" + b"\x00" * 150,
+        "text": "Your hips are dropping below your body alignment.",
+        "duration": 6.0,
+        "issue": "Hips are sagging down",
+        "enqueued_at": t0,
+    })
+
+    # At t0 + 4.5s (after active cue finishes), user's form is now "Good"!
+    active = pipeline.get_active_audio(current_form_status="Good", now=t0 + 4.5)
+    # The stale error cue was discarded because form is already Good!
+    assert active is None
+    assert len(pipeline.queue) == 0
+
+
+# ==============================================================================
+# TEST 26: Queue cleared on workout completion
+# ==============================================================================
+def test_26_clear_queue_on_workout_completion():
+    coach = LLMCoach(groq_client=None)
+    tts = TextToSpeech()
+    pipeline = VoicePipeline(coach, tts)
+
+    # Queue some intermediate form cues
+    pipeline.queue.append({"event_id": "q1", "text": "Squat deeper", "duration": 4.0, "enqueued_at": 1.0})
+    pipeline.queue.append({"event_id": "q2", "text": "Drive knees out", "duration": 4.0, "enqueued_at": 2.0})
+    assert len(pipeline.queue) == 2
+
+    # Clear queue
+    pipeline.clear_queue()
+    assert len(pipeline.queue) == 0
+    assert pipeline.current_playing is None
+
+
+# ==============================================================================
+# TEST 27: Form status and voice message consistency
+# ==============================================================================
+def test_27_form_status_and_voice_message_consistency():
+    from tests.test_form_correction import make_shoulder_press_landmarks
+    det = ShoulderPressDetector()
+    # Good posture at 90 degrees elbows and neutral spine
+    m_good = det.process(make_shoulder_press_landmarks(90.0, 90.0, 175.0))
+    assert m_good["form_status"] == "Good"
+    # Form correction text is encouraging, never an error complaint
+    assert "clean" in m_good["form_correction"].lower() or "adjustment" in m_good["form_correction"].lower() or "maintain" in m_good["form_correction"].lower()

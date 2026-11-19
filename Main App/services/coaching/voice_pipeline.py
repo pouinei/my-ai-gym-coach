@@ -1,53 +1,55 @@
 import time
 import uuid
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 import streamlit as st
 import streamlit.components.v1 as components
 from services.coaching.tts import validate_audio_bytes
+from services.coaching.llm import get_deterministic_cue
 
 logger = logging.getLogger(__name__)
 
 STAGE_GUIDANCE_CUES = {
     "Shoulder Press": {
-        "moving": "Press upward. Extend your elbows.",
-        "descending": "Lower slowly to shoulder level.",
-        "inflected": "Full extension overhead! Lower down.",
+        "moving": "Press upward with control and extend your elbows toward full lockout.",
+        "descending": "Lower the weights slowly back to shoulder height.",
+        "inflected": "Full extension overhead! Now lower down with control.",
     },
     "Squats": {
-        "moving": "Bend your knees. Keep your back straight.",
-        "descending": "Lower your hips with control.",
-        "inflected": "Good depth! Push back up.",
-        "ascending": "Drive upward through your heels.",
+        "moving": "Bend your knees and keep your chest elevated.",
+        "descending": "Lower your hips smoothly until your thighs reach parallel.",
+        "inflected": "Great depth! Push upward through your heels.",
+        "ascending": "Drive upward through your heels to a full stand.",
     },
     "Push-ups": {
-        "moving": "Lower your chest to the floor.",
-        "descending": "Control the descent.",
-        "inflected": "Chest down! Push upward.",
-        "ascending": "Push through your palms.",
+        "moving": "Lower your chest smoothly toward the floor.",
+        "descending": "Control the descent while keeping your core engaged.",
+        "inflected": "Chest down! Press firmly upward to full plank.",
+        "ascending": "Push through your palms and maintain a straight plank.",
     },
     "Biceps Curls (Dumbbell)": {
-        "moving": "Curl upward towards your shoulders.",
-        "ascending": "Squeeze at the top.",
-        "inflected": "Good contraction! Lower slowly.",
-        "descending": "Lower with control.",
+        "moving": "Curl upward toward your shoulders without moving your elbows.",
+        "ascending": "Squeeze your biceps at the top contraction.",
+        "inflected": "Great contraction! Lower the dumbbells slowly.",
+        "descending": "Lower with steady control for a full stretch.",
     },
     "Lunges": {
-        "moving": "Step forward. Lower your hips.",
-        "descending": "Drop your back knee towards the floor.",
-        "inflected": "Solid lunge! Push back up.",
-        "ascending": "Drive through the front heel.",
+        "moving": "Step forward with control and lower your hips.",
+        "descending": "Drop your back knee toward the floor while keeping your torso upright.",
+        "inflected": "Solid lunge depth! Drive back up through your front heel.",
+        "ascending": "Drive through the front heel to return to a full stand.",
     },
 }
 
 
 class VoicePipeline:
     """
-    Unified Voice Coaching Pipeline:
-    - Bridges Computer Vision events to AI coaching text and TTS audio
-    - Enforces anti-spam rate limiting and debounce
-    - Supports muting and offline deterministic fallbacks
-    - Pre-caches core audio phrases for instant playback
+    Unified Voice Coaching Pipeline with Natural Delivery & Audio Queue:
+    - Bridges Computer Vision events to complete, natural AI coaching text and TTS audio
+    - Enforces non-interruption audio queue: never truncates or replaces active speech
+    - Provides smart coaching: detailed explanation on first detection, focused cues on repetition
+    - Automatically purges stale error messages when form recovers to Good
+    - Supports muting, offline deterministic fallbacks, and Streamlit rerun persistence
     """
 
     def __init__(self, llm, tts, precache: bool = False):
@@ -59,21 +61,119 @@ class VoicePipeline:
         self.muted: bool = False
         self.had_form_issue: bool = False
 
+        # Queue Management
+        self.queue: List[Dict[str, Any]] = []
+        self.current_playing: Optional[Dict[str, Any]] = None
+
         if precache:
             self._precache_standard_cues()
 
+    def estimate_duration(self, audio_bytes: Optional[bytes], text: str = "") -> float:
+        """
+        Estimates the speaking duration in seconds.
+        gTTS produces CBR 32 kbps (4,000 bytes/sec) MP3.
+        Also checks word count (approx 2.3 words/sec).
+        """
+        byte_dur = (len(audio_bytes) / 4000.0) if audio_bytes else 0.0
+        word_dur = (len(text.split()) / 2.3 + 0.6) if text else 0.0
+        return max(2.5, byte_dur, word_dur)
+
+    def is_playing(self, now: Optional[float] = None) -> bool:
+        """Returns True if the current audio event is actively playing in the browser."""
+        if not self.current_playing:
+            return False
+        if now is None:
+            now = time.time()
+        started_at = self.current_playing.get("started_at", 0.0)
+        duration = self.current_playing.get("duration", 0.0)
+        return now < (started_at + duration)
+
+    def enqueue(
+        self,
+        audio_bytes: bytes,
+        text: str,
+        event_id: str,
+        duration: float,
+        event: str,
+        issue: Optional[str] = None,
+        exercise: Optional[str] = None,
+    ) -> None:
+        """Queues an audio announcement for playback after current audio finishes."""
+        cleaned_text = text.strip().lower()
+        # Prevent identical messages from piling up in the queue
+        if any(item["text"].strip().lower() == cleaned_text for item in self.queue):
+            return
+        # Bound maximum queue size to avoid stale backlogs
+        if len(self.queue) >= 4:
+            self.queue.pop(0)
+
+        self.queue.append({
+            "event_id": event_id,
+            "audio_bytes": audio_bytes,
+            "text": text,
+            "duration": duration,
+            "event": event,
+            "issue": issue,
+            "exercise": exercise,
+            "enqueued_at": time.time(),
+        })
+
+    def clear_queue(self) -> None:
+        """Clears all pending announcements and resets playback state on workout completion/reset."""
+        self.queue.clear()
+        self.current_playing = None
+
+    def get_active_audio(self, current_form_status: str = "Good", now: Optional[float] = None) -> Optional[Tuple[bytes, str, str]]:
+        """
+        Servicing loop for the audio queue:
+        - If current audio is still playing, keeps it mounted in DOM.
+        - When current audio finishes, dequeues the next announcement.
+        - Automatically discards stale form correction cues if form is already Good.
+        """
+        if self.muted:
+            return None
+        if now is None:
+            now = time.time()
+
+        # If current audio is still playing, keep it mounted
+        if self.is_playing(now):
+            return (
+                self.current_playing["audio_bytes"],
+                self.current_playing["text"],
+                self.current_playing["event_id"],
+            )
+
+        # Current audio has finished; check the queue
+        while self.queue:
+            item = self.queue.pop(0)
+            enqueued_at = item.get("enqueued_at", now)
+
+            # If user already corrected form to Good, discard pending negative corrections!
+            if item.get("issue") and current_form_status == "Good" and (now - enqueued_at) > 1.0:
+                continue
+
+            # If item is older than 12 seconds, discard as stale
+            if (now - enqueued_at) > 12.0:
+                continue
+
+            # Valid item ready for playback
+            item["started_at"] = now
+            self.current_playing = item
+            self.last_spoken_at = now
+            self.last_spoken_text = item["text"]
+            return (item["audio_bytes"], item["text"], item["event_id"])
+
+        self.current_playing = None
+        return None
+
     def _precache_standard_cues(self) -> None:
         standard_phrases = [
-            "Good job! Rep completed.",
-            "Awesome work! Set completed. Take a breath.",
-            "Workout completed! Outstanding job!",
-            "Step into the camera frame so I can track your form.",
-            "Looking strong! Maintain good control.",
-            "Get ready. Raise your dumbbells to shoulder height.",
-            "Get ready. Stand straight with feet shoulder-width apart.",
-            "Get ready. Get into a solid plank position.",
-            "Get ready. Keep your elbows close to your sides.",
-            "Get ready. Stand upright and prepare to step forward.",
+            "Good job! Rep completed. Keep that steady pace and control.",
+            "Awesome work! Set completed. Take a breath, recover, and prepare for your next set.",
+            "Workout completed! Outstanding job! You crushed every set today.",
+            "Key body landmarks are outside the camera frame. Step back into the camera frame so I can track your full body.",
+            "Looking strong! Maintain good control and keep your breathing steady.",
+            "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique.",
             "Welcome to Apna AI Coach. Voice is active and working properly.",
         ]
         try:
@@ -93,37 +193,37 @@ class VoicePipeline:
             depth = metrics.get("depth_status", "")
             back_angle = metrics.get("back_angle", 180)
             if depth in ("TOO HIGH", "HALF SQUAT"):
-                return "Squat a little deeper for full range of motion."
+                return "Your squat depth is too shallow. Squat a little deeper for full range of motion. Bend your knees and push your hips backward until thighs are parallel to the floor."
             if isinstance(back_angle, (int, float)) and back_angle < 120:
-                return "Keep your chest up and back straight."
+                return "Your upper body is leaning too far forward. Keep your chest lifted, engage your core, and look straight ahead throughout the squat."
 
         elif exercise == "Push-ups":
             alignment = metrics.get("body_alignment", "")
             hip_status = metrics.get("hip_status", "")
             if alignment == "Poor Form":
-                return "Keep your body in a straight line."
+                return "Your body alignment is bending out of line. Engage your core tightly and maintain a solid straight line from head to heels."
             if hip_status == "SAGGING":
-                return "Keep your core tight; do not let your hips sag."
+                return "Your hips are dropping below your body alignment. Engage your core and maintain a straight line from your shoulders to your heels."
             if hip_status == "PIKED UP":
-                return "Lower your hips into a straight plank line."
+                return "Your hips are lifted too high in the air. Lower your hips so your body forms a straight, solid plank line from your head to your heels."
 
         elif exercise == "Biceps Curls (Dumbbell)":
             swing = metrics.get("swing_status", "")
             shoulder = metrics.get("shoulder_status", "")
             if swing == "SWINGING":
-                return "Avoid swinging your body; isolate your biceps."
+                return "You are swinging your torso to lift the weights. Stand tall, brace your core, and isolate your biceps by moving only your forearms."
             if shoulder == "ELBOW DRIFTING":
-                return "Keep your elbows pinned to your sides."
+                return "You are moving your elbows away from your body. Keep your elbows close to your sides, avoid swinging your torso, and curl the weight slowly."
 
         elif exercise == "Shoulder Press":
             back_arch = metrics.get("back_arch_status", "")
             if back_arch == "Excessive Arch":
-                return "Don't arch your lower back. Brace your core."
+                return "You are arching your lower back during the press. This puts unnecessary stress on your lumbar spine. Brace your core tightly, keep your spine neutral, and press straight overhead without leaning back."
 
         elif exercise == "Lunges":
             balance = metrics.get("balance_status", "")
             if balance == "OFF BALANCE":
-                return "Maintain balance and keep your torso upright."
+                return "Your balance is unstable. Take a controlled step forward, keep your upper body upright, and lower yourself slowly while maintaining comfortable knee alignment."
 
         return None
 
@@ -134,7 +234,7 @@ class VoicePipeline:
         metrics: Dict[str, Any],
     ) -> Optional[Tuple[bytes, str, str]]:
         """
-        Processes a coaching event.
+        Processes a coaching event with complete sentence formulation and audio queue management.
         Returns: (audio_bytes, text, event_id) or None.
         """
         if self.muted:
@@ -158,13 +258,13 @@ class VoicePipeline:
 
         # Rate-limiting / anti-spam for minor cues
         if not is_major_event:
-            if (now - self.last_spoken_at) < 3.5:
+            if (now - self.last_spoken_at) < 4.0:
                 return None
 
             # Resume positive feedback when form was corrected
             if not issue and not stage_cue and self.had_form_issue and metrics.get("form_status") == "Good":
                 self.had_form_issue = False
-                issue = "Form is clean! Looking strong."
+                issue = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             if not issue and not stage_cue and event == "ongoing_form_check":
                 return None
@@ -172,7 +272,7 @@ class VoicePipeline:
         # Determine spoken text
         if event == "rep_invalid":
             reason = metrics.get("form_correction") or metrics.get("form_issue", "check your form")
-            text = f"Rep not counted. {reason}"
+            text = get_deterministic_cue("rep_invalid", reason, exercise)
         elif stage_cue and not issue:
             text = stage_cue
         else:
@@ -181,29 +281,52 @@ class VoicePipeline:
         if not text:
             return None
 
-        # Prevent repeating identical text within 4 seconds
-        if text.strip().lower() == self.last_spoken_text.strip().lower() and (now - self.last_spoken_at) < 4.0:
+        # Prevent repeating identical text within 6.0 seconds
+        if text.strip().lower() == self.last_spoken_text.strip().lower() and (now - self.last_spoken_at) < 6.0:
             return None
 
         audio_bytes = self.tts.speak(text)
         if not audio_bytes:
             return None
 
+        duration = self.estimate_duration(audio_bytes, text)
+        event_id = uuid.uuid4().hex
+
+        # Non-interruption queue: if audio is currently playing in browser, enqueue!
+        if self.is_playing(now):
+            self.enqueue(audio_bytes, text, event_id, duration, event, issue, exercise)
+            # Return current playing audio so player remains mounted
+            return (
+                self.current_playing["audio_bytes"],
+                self.current_playing["text"],
+                self.current_playing["event_id"],
+            )
+
+        # Idle: start playing immediately
+        self.current_playing = {
+            "event_id": event_id,
+            "audio_bytes": audio_bytes,
+            "text": text,
+            "duration": duration,
+            "event": event,
+            "issue": issue,
+            "exercise": exercise,
+            "started_at": now,
+        }
         self.last_spoken_at = now
         self.last_spoken_text = text
-        event_id = uuid.uuid4().hex
 
         return audio_bytes, text, event_id
 
 
 def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> None:
     """
-    Renders the audio element into Streamlit.
+    Renders the audio element into Streamlit with browser-level non-interruption protection.
     Ensures:
     1. Audio is valid and decodable via validate_audio_bytes.
-    2. Audio is NOT removed on subsequent 250ms reruns (persists in DOM).
-    3. Uses autoplay=True on first render of an event.
-    4. Injects JS helper to ensure unmuted volume=1.0 and invoke play().
+    2. Keeps audio mounted in DOM during Streamlit 250ms reruns without restarting.
+    3. Triggers autoplay=True on first render of a new event_id.
+    4. Preserves native HTML5 Play/Pause/Volume controls if browser blocks autoplay.
     """
     if not audio_bytes or not validate_audio_bytes(audio_bytes):
         return

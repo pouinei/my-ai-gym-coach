@@ -144,6 +144,8 @@ def sync_metrics_update(context):
         st.session_state.last_notified_workout_complete = True
 
         if st.session_state.get("voice_pipeline"):
+            # Clear stale coaching queue when workout ends so only the celebration plays
+            st.session_state.voice_pipeline.clear_queue()
             result = st.session_state.voice_pipeline.process_event(
                 event="workout_completed",
                 exercise=exercise,
@@ -169,3 +171,23 @@ def sync_metrics_update(context):
             metrics=latest_metrics,
         )
         _apply_voice_result(result)
+
+    # 6. Service the Audio Queue: ensure currently playing speech finishes completely
+    # and pop next pending announcement without audio clipping or interruption
+    if st.session_state.get("voice_pipeline"):
+        active_audio = st.session_state.voice_pipeline.get_active_audio(
+            current_form_status=st.session_state.form_status,
+            now=time.time(),
+        )
+        if active_audio:
+            _apply_voice_result(active_audio)
+
+    # 7. Form Status Consistency: never show Form Status Good while displaying an old error correction
+    if st.session_state.form_status == "Good":
+        current_feedback = (st.session_state.get("coach_feedback") or "").lower()
+        vp = st.session_state.get("voice_pipeline")
+        is_playing = vp.is_playing() if vp else False
+        if not is_playing:
+            error_keywords = ("arch", "sag", "caving", "inward", "drift", "swing", "sway", "shallow", "too low", "not counted")
+            if any(k in current_feedback for k in error_keywords):
+                st.session_state.coach_feedback = st.session_state.form_correction

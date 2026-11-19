@@ -175,13 +175,25 @@ class PushUpDetector(BaseExercise):
         if cycle_completed:
             flaws = []
             if body_visible and self._max_hip_sag_in_rep > self.hip_sag_tolerance:
-                flaws.append(("Hips are sagging down", "Keep your core tight; do not let your hips sag."))
+                flaws.append((
+                    "Hips are sagging down",
+                    "Your hips are dropping below your body alignment. Engage your core and maintain a straight line from your shoulders to your heels. Lower your chest slowly and push back up."
+                ))
             elif body_visible and self._min_body_angle_in_rep < 150.0:
-                flaws.append(("Incorrect body alignment", "Keep your body in a straight plank line."))
+                flaws.append((
+                    "Incorrect body alignment",
+                    "Your body alignment is bending out of line. Engage your core tightly and maintain a solid straight line from head to heels throughout the repetition."
+                ))
             if self._min_elbow_angle_in_rep > 95.0:
-                flaws.append(("Incomplete elbow bend", "Lower your chest a little more."))
+                flaws.append((
+                    "Incomplete elbow bend",
+                    "You are not lowering your chest enough. Bend your elbows until your chest is a few inches from the floor for full chest and triceps activation."
+                ))
             if elbow_angle < 150.0:
-                flaws.append(("Incomplete upward extension", "Push all the way up to full arm extension."))
+                flaws.append((
+                    "Incomplete upward extension",
+                    "You didn't push all the way to the top. Fully extend your arms and lock out your elbows at the top of the plank."
+                ))
 
             if flaws:
                 self.invalid_reps += 1
@@ -199,7 +211,7 @@ class PushUpDetector(BaseExercise):
                 rep_invalid = False
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Good form! Rep completed."
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             self._rep_start_time = current_time
             self._min_elbow_angle_in_rep = elbow_angle
@@ -211,19 +223,19 @@ class PushUpDetector(BaseExercise):
             if body_visible and hip_status == "SAGGING":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Hips are sagging down"
-                self.form_correction = "Keep your core tight; do not let your hips sag."
+                self.form_correction = "Your hips are dropping below your body alignment. Engage your core and maintain a straight line from your shoulders to your heels. Lower your chest slowly and push back up."
             elif body_visible and hip_status == "PIKED UP":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Hips are raised too high"
-                self.form_correction = "Lower your hips into a straight plank line."
+                self.form_correction = "Your hips are lifted too high in the air. Lower your hips so your body forms a straight, solid plank line from your head to your heels."
             elif elbow_angle > 95.0 and self.stage == "inflected":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Incomplete elbow bend"
-                self.form_correction = "Lower your chest a little more."
+                self.form_correction = "You are not lowering your chest enough. Bend your elbows until your chest is a few inches from the floor for full chest and triceps activation."
             else:
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Maintain this form!"
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
         return {
             "reps": self.valid_reps,

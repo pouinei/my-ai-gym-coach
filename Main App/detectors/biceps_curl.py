@@ -171,13 +171,25 @@ class BicepsCurlDetector(BaseExercise):
         if cycle_completed:
             flaws = []
             if torso_visible and self._max_torso_angle_in_rep > self.swing_threshold:
-                flaws.append(("Swinging the torso using momentum", "Avoid swinging your body; isolate your biceps."))
+                flaws.append((
+                    "Swinging the torso using momentum",
+                    "You are swinging your torso to lift the weights. Stand tall, brace your core, and isolate your biceps by moving only your forearms."
+                ))
             if self._max_elbow_drift_in_rep > self.elbow_drift_tolerance:
-                flaws.append(("Excessive elbow drift", "Keep your elbows pinned to your sides."))
+                flaws.append((
+                    "Excessive elbow drift",
+                    "You are moving your elbows away from your body. Keep your elbows close to your sides, avoid swinging your torso, and curl the weight slowly."
+                ))
             if self._min_elbow_angle_in_rep > 65.0:
-                flaws.append(("Incomplete curl range", "Curl the weight all the way to the top."))
+                flaws.append((
+                    "Incomplete curl range",
+                    "You are not curling the weight high enough. Lift the weight all the way up toward your shoulder to achieve a full bicep contraction."
+                ))
             if elbow_angle < 145.0:
-                flaws.append(("Incomplete lowering", "Lower the weight all the way down."))
+                flaws.append((
+                    "Incomplete lowering",
+                    "You are not lowering the weight completely. Extend your arms all the way down until your elbows are straight before curling again."
+                ))
 
             if flaws:
                 self.invalid_reps += 1
@@ -195,7 +207,7 @@ class BicepsCurlDetector(BaseExercise):
                 rep_invalid = False
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Good form! Rep completed."
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             self._rep_start_time = current_time
             self._min_elbow_angle_in_rep = elbow_angle
@@ -207,19 +219,19 @@ class BicepsCurlDetector(BaseExercise):
             if swing_status == "SWINGING":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Swinging the torso using momentum"
-                self.form_correction = "Avoid swinging your body; isolate your biceps."
+                self.form_correction = "You are swinging your torso to lift the weights. Stand tall, brace your core, and isolate your biceps by moving only your forearms."
             elif shoulder_status == "ELBOW DRIFTING":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Excessive elbow drift"
-                self.form_correction = "Keep your elbows pinned to your sides."
+                self.form_correction = "You are moving your elbows away from your body. Keep your elbows close to your sides, avoid swinging your torso, and curl the weight slowly."
             elif elbow_angle > 65.0 and self.stage == "inflected":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Incomplete curl range"
-                self.form_correction = "Curl the weight all the way to the top."
+                self.form_correction = "You are not curling the weight high enough. Lift the weight all the way up toward your shoulder to achieve a full bicep contraction."
             else:
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Maintain this form!"
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
         return {
             "reps": self.valid_reps,

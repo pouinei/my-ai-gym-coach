@@ -160,13 +160,25 @@ class LungesDetector(BaseExercise):
         if cycle_completed:
             flaws = []
             if self._max_lateral_offset_in_rep > self.balance_tolerance:
-                flaws.append(("Losing balance / torso sway", "Maintain balance and keep your torso upright."))
+                flaws.append((
+                    "Losing balance / torso sway",
+                    "Your balance is unstable. Take a controlled step forward, keep your upper body upright, and lower yourself slowly while maintaining comfortable knee alignment."
+                ))
             if self._knee_past_toes_in_rep:
-                flaws.append(("Front knee pushing too far past toes", "Keep your front knee aligned directly over your ankle."))
+                flaws.append((
+                    "Front knee pushing too far past toes",
+                    "Your front knee is tracking too far forward over your toes. Take a slightly larger stride forward so your front knee stays directly above your ankle."
+                ))
             if self._min_knee_angle_in_rep > 105.0:
-                flaws.append(("Insufficient lunge depth", "Lower yourself a little more into a deeper lunge."))
+                flaws.append((
+                    "Insufficient lunge depth",
+                    "Your lunge is too shallow. Lower your hips until your front thigh is parallel to the ground and your back knee hovers just above the floor."
+                ))
             if front_knee_angle < 150.0:
-                flaws.append(("Incomplete return to standing", "Return all the way to a full standing position."))
+                flaws.append((
+                    "Incomplete return to standing",
+                    "You didn't return to a full standing posture. Press firmly through your front heel to stand all the way back up."
+                ))
 
             if flaws:
                 self.invalid_reps += 1
@@ -184,7 +196,7 @@ class LungesDetector(BaseExercise):
                 rep_invalid = False
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Good form! Rep completed."
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
             self._rep_start_time = current_time
             self._min_knee_angle_in_rep = front_knee_angle
@@ -196,19 +208,19 @@ class LungesDetector(BaseExercise):
             if balance_status == "OFF BALANCE":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Losing balance / torso sway"
-                self.form_correction = "Maintain balance and keep your torso upright."
+                self.form_correction = "Your balance is unstable. Take a controlled step forward, keep your upper body upright, and lower yourself slowly while maintaining comfortable knee alignment."
             elif knee_past_toes:
                 self.form_status = "Needs Correction"
                 self.form_issue = "Front knee pushing too far past toes"
-                self.form_correction = "Keep your front knee aligned directly over your ankle."
+                self.form_correction = "Your front knee is tracking too far forward over your toes. Take a slightly larger stride forward so your front knee stays directly above your ankle."
             elif front_knee_angle > 105.0 and self.stage == "inflected":
                 self.form_status = "Needs Correction"
                 self.form_issue = "Insufficient lunge depth"
-                self.form_correction = "Lower into a deeper lunge."
+                self.form_correction = "Your lunge is too shallow. Lower your hips until your front thigh is parallel to the ground and your back knee hovers just above the floor."
             else:
                 self.form_status = "Good"
                 self.form_issue = "None - Form is clean"
-                self.form_correction = "Maintain this form!"
+                self.form_correction = "Great adjustment! Your form is clean, balanced, and under control. Keep up this exact technique."
 
         return {
             "reps": self.valid_reps,
