@@ -16,6 +16,7 @@ load_dotenv()
 from services.auth.login_wall import render_login_wall
 from services.state.session_defaults import initial_session_defaults
 from services.config.workout_config import EXERCISE_OPTIONS
+from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
 from services.ui.style_loader import load_css, inject_local_font, inject_webrtc_styles
 from services.persistence.exercise_repository import init_db
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
@@ -213,17 +214,35 @@ def main():
             unsafe_allow_html=True,
         )
     else:
+        rtc_config = get_rtc_configuration()
+
         context = webrtc_streamer(
             key="exercise-analysis",
             mode=WebRtcMode.SENDRECV,
             video_processor_factory=VideoProcessorClass,
-            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-            media_stream_constraints={
-                "video": True,
-                "audio": False
-            },
+            rtc_configuration=rtc_config,
+            media_stream_constraints=DEFAULT_MEDIA_CONSTRAINTS,
             async_processing=True
         )
+
+        if not context.state.playing:
+            st.info("📹 Click **START** above to activate your camera. Make sure browser camera permission is allowed.")
+            with st.expander("🛠️ Connection Help & STUN/TURN Settings", expanded=False):
+                st.markdown(
+                    """
+                    - **Camera Permissions**: Check that your browser has allowed camera access on this page.
+                    - **Network Firewalls**: If your connection takes longer than expected, your network might restrict direct UDP traffic.
+                    - **Custom TURN Support**: You can add your own free TURN credentials (from [Metered](https://www.metered.ca/tools/openrelay/)) in **Settings ➔ Secrets**:
+                    ```toml
+                    [webrtc]
+                    turn_url = "turn:global.relay.metered.ca:80"
+                    turn_username = "your_username"
+                    turn_credential = "your_credential"
+                    ```
+                    """
+                )
+        else:
+            st.caption("🟢 Live Tracking Active")
 
         sync_metrics_update(context)
 
