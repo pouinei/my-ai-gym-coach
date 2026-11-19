@@ -1,17 +1,33 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
 
-# Virtual environment
+# Virtual Environments
 venv/
-.env/
+.venv/
+env/
+ENV/
 
-# OS files
-.DS_Store
-Thumbs.db
+# Secrets and Environment Variables (NEVER commit secrets!)
+.env
+.env.*
+*.env
+.streamlit/secrets.toml
+secrets.toml
 
-# Database
+# Databases
+*.db
+*.sqlite
+*.sqlite3
 Main App/data.db
 
-# Logs
+# Logs and runtime artifacts
 *.log
+st_out.log
+st_err.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

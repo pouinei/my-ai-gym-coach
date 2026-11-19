@@ -1,7 +1,18 @@
 import streamlit as st
 import os
+import sys
 import time
+from pathlib import Path
 import pandas as pd
+from dotenv import load_dotenv
+
+# Ensure the app directory is on sys.path and load environment variables
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+load_dotenv()
+
 from services.auth.login_wall import render_login_wall
 from services.state.session_defaults import initial_session_defaults
 from services.config.workout_config import EXERCISE_OPTIONS
@@ -16,7 +27,7 @@ from services.coaching.llm import LLMCoach
 from services.coaching.tts import TextToSpeech
 from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
 
-  
+
 def main():
     st.set_page_config(
         page_icon="🏋️‍♀️",
@@ -25,8 +36,10 @@ def main():
         layout="centered"
     )
 
-    load_css(os.path.join(os.getcwd(), "static", "style.css"))
-    inject_local_font(os.path.join(os.getcwd(), "static", "AdobeClean.otf"), "AdobeClean")
+    css_path = APP_DIR / "static" / "style.css"
+    font_path = APP_DIR / "static" / "AdobeClean.otf"
+    load_css(str(css_path) if css_path.exists() else os.path.join(os.getcwd(), "static", "style.css"))
+    inject_local_font(str(font_path) if font_path.exists() else os.path.join(os.getcwd(), "static", "AdobeClean.otf"), "AdobeClean")
 
     init_db()
 
@@ -37,15 +50,18 @@ def main():
 
     if "voice_pipeline" not in st.session_state:
         try:
-            api_key = os.environ.get("GROQ_API_KEY", "")
+            api_key = os.environ.get("GROQ_API_KEY", "").strip()
 
             if not api_key and hasattr(st, "secrets") and "GROQ_API_KEY" in st.secrets:
-                api_key = st.secrets["GROQ_API_KEY"]
-            
-            groq_client = Groq(api_key=api_key)
-            llm_coach = LLMCoach(groq_client)
-            tts = TextToSpeech()
-            st.session_state.voice_pipeline = VoicePipeline(llm_coach, tts)
+                api_key = str(st.secrets["GROQ_API_KEY"]).strip()
+
+            if api_key:
+                groq_client = Groq(api_key=api_key)
+                llm_coach = LLMCoach(groq_client)
+                tts = TextToSpeech()
+                st.session_state.voice_pipeline = VoicePipeline(llm_coach, tts)
+            else:
+                st.session_state.voice_pipeline = None
         except Exception as e:
             st.session_state.voice_pipeline = None
 

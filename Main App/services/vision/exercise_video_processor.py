@@ -15,13 +15,17 @@ from detectors.lunges import LungesDetector
 from services.config.workout_config import POSE_CONNECTIONS
 
 
+from pathlib import Path
+
 class VideoProcessorClass(VideoProcessorBase):
     def __init__(self):
         self._lock = threading.Lock()
         self._latest_metrics = None
         self._exercise_type = "Squats"
 
-        model_path = os.path.join(os.getcwd(), "ml_models", "pose_landmarker_full.task")
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        resolved_model_path = base_dir / "ml_models" / "pose_landmarker_full.task"
+        model_path = str(resolved_model_path) if resolved_model_path.exists() else os.path.join(os.getcwd(), "ml_models", "pose_landmarker_full.task")
         base_option = python.BaseOptions(model_asset_path=model_path)
 
         options = vision.PoseLandmarkerOptions(
