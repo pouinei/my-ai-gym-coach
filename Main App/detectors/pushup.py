@@ -1,12 +1,10 @@
+import time
 from core.base_exercise import BaseExercise
+from core.rep_state_machine import RepetitionStateMachine, Direction
+from services.config.workout_config import DETECTOR_CONFIG
 
 
 class PushUpDetector(BaseExercise):
-    DOWN_THRESHOLD = 90
-    UP_THRESHOLD = 160
-    MIN_VISIBILITY = 0.7
-    HIP_SAG_TOLERANCE = 0.08
-
     LEFT_SHOULDER = 11
     LEFT_ELBOW = 13
     LEFT_WRIST = 15
@@ -20,16 +18,55 @@ class PushUpDetector(BaseExercise):
 
     def __init__(self):
         super().__init__()
+        cfg = DETECTOR_CONFIG.get("Push-ups", {})
+        self.state_machine = RepetitionStateMachine(
+            start_threshold=cfg.get("start_threshold", 155.0),
+            inflection_threshold=cfg.get("inflection_threshold", 90.0),
+            direction=Direction.START_HIGH_INFLECT_LOW,
+            hysteresis=cfg.get("hysteresis", 15.0),
+            min_rep_duration=cfg.get("min_rep_duration", 0.7),
+            consecutive_frames=cfg.get("consecutive_frames", 2),
+        )
+        self.min_visibility = cfg.get("min_visibility", 0.65)
+        self.hip_sag_tolerance = cfg.get("hip_sag_tolerance", 0.08)
+        self._active_side = None
 
     def reset(self) -> None:
+        self.state_machine.reset()
         self.reps = 0
         self.stage = None
+        self._active_side = None
 
-    def process(self, landmarks) -> dict:
-        left_vis = landmarks[self.LEFT_ELBOW].visibility
-        right_vis = landmarks[self.RIGHT_ELBOW].visibility
+    def _select_tracking_side(self, landmarks) -> str:
+        left_vis = (
+            getattr(landmarks[self.LEFT_SHOULDER], "visibility", 0.0)
+            + getattr(landmarks[self.LEFT_ELBOW], "visibility", 0.0)
+            + getattr(landmarks[self.LEFT_WRIST], "visibility", 0.0)
+        ) / 3.0
 
-        if left_vis >= right_vis:
+        right_vis = (
+            getattr(landmarks[self.RIGHT_SHOULDER], "visibility", 0.0)
+            + getattr(landmarks[self.RIGHT_ELBOW], "visibility", 0.0)
+            + getattr(landmarks[self.RIGHT_WRIST], "visibility", 0.0)
+        ) / 3.0
+
+        if self._active_side is None:
+            self._active_side = "left" if left_vis >= right_vis else "right"
+        else:
+            if self._active_side == "left" and right_vis > (left_vis + 0.15):
+                self._active_side = "right"
+            elif self._active_side == "right" and left_vis > (right_vis + 0.15):
+                self._active_side = "left"
+
+        return self._active_side
+
+    def process(self, landmarks, current_time=None) -> dict:
+        if current_time is None:
+            current_time = time.time()
+
+        side = self._select_tracking_side(landmarks)
+
+        if side == "left":
             shoulder_idx = self.LEFT_SHOULDER
             elbow_idx = self.LEFT_ELBOW
             wrist_idx = self.LEFT_WRIST
@@ -42,34 +79,29 @@ class PushUpDetector(BaseExercise):
             hip_idx = self.RIGHT_HIP
             ankle_idx = self.RIGHT_ANKLE
 
+        key_landmarks_visible = self.are_visible(
+            landmarks, [shoulder_idx, elbow_idx, wrist_idx], min_vis=self.min_visibility
+        )
+
         elbow_angle = self.calculate_angle(
             self.get_point(landmarks, shoulder_idx),
             self.get_point(landmarks, elbow_idx),
             self.get_point(landmarks, wrist_idx),
         )
 
-        body_angle = self.calculate_angle(
-            self.get_point(landmarks, shoulder_idx),
-            self.get_point(landmarks, hip_idx),
-            self.get_point(landmarks, ankle_idx),
-        )
-
-        shoulder_y = landmarks[shoulder_idx].y
-        ankle_y = landmarks[ankle_idx].y
-        hip_y = landmarks[hip_idx].y
-
-        expected_hip_y = (shoulder_y + ankle_y) / 2
-        hip_deviation = hip_y - expected_hip_y
-
-        key_landmarks_visible = landmarks[shoulder_idx].visibility > self.MIN_VISIBILITY and landmarks[elbow_idx].visibility > self.MIN_VISIBILITY and landmarks[wrist_idx].visibility > self.MIN_VISIBILITY and landmarks[hip_idx].visibility > self.MIN_VISIBILITY
-        
+        rep_incremented = False
         if key_landmarks_visible:
-            if elbow_angle < self.DOWN_THRESHOLD:
-                self.stage = "down"
+            rep_incremented = self.state_machine.update(elbow_angle, current_time)
+            self.reps = self.state_machine.reps
+            self.stage = self.state_machine.stage_name
 
-            if elbow_angle > self.UP_THRESHOLD and self.stage == "down":
-                self.stage = "up"
-                self.reps += 1
+        body_angle = 180.0
+        if self.are_visible(landmarks, [shoulder_idx, hip_idx, ankle_idx], min_vis=self.min_visibility):
+            body_angle = self.calculate_angle(
+                self.get_point(landmarks, shoulder_idx),
+                self.get_point(landmarks, hip_idx),
+                self.get_point(landmarks, ankle_idx),
+            )
 
         if body_angle > 160:
             body_alignment = "Straight"
@@ -78,17 +110,30 @@ class PushUpDetector(BaseExercise):
         else:
             body_alignment = "Poor Form"
 
-        if abs(hip_deviation) <= self.HIP_SAG_TOLERANCE:
+        shoulder_y = landmarks[shoulder_idx].y
+        ankle_y = landmarks[ankle_idx].y
+        hip_y = landmarks[hip_idx].y
+        expected_hip_y = (shoulder_y + ankle_y) / 2.0
+        hip_deviation = hip_y - expected_hip_y
+
+        if abs(hip_deviation) <= self.hip_sag_tolerance:
             hip_status = "LEVEL"
-        elif hip_deviation > self.HIP_SAG_TOLERANCE:
+        elif hip_deviation > self.hip_sag_tolerance:
             hip_status = "SAGGING"
         else:
             hip_status = "PIKED UP"
 
+        posture_feedback = "Good Form"
+        if hip_status == "SAGGING":
+            posture_feedback = "Do not sag your hips; keep core engaged"
+        elif hip_status == "PIKED UP":
+            posture_feedback = "Lower your hips to keep a flat back"
+
         return {
             "reps": self.reps,
+            "rep_incremented": rep_incremented,
             "elbow_angle": int(elbow_angle),
             "body_alignment": body_alignment,
             "hip_status": hip_status,
+            "posture_feedback": posture_feedback,
         }
-    

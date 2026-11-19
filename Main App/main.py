@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
@@ -18,11 +19,7 @@ from services.state.session_defaults import initial_session_defaults
 from services.config.workout_config import EXERCISE_OPTIONS
 from services.config.webrtc_config import get_rtc_configuration, DEFAULT_MEDIA_CONSTRAINTS
 from services.ui.style_loader import load_css, inject_local_font, inject_webrtc_styles
-from services.persistence.exercise_repository import init_db
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
-from services.vision.exercise_video_processor import VideoProcessorClass
-from services.tracking.metrics import sync_metrics_update
-from services.persistence.exercise_repository import get_users_exercises
+from services.persistence.exercise_repository import init_db, save_workout_session, get_users_exercises
 from groq import Groq
 from services.coaching.llm import LLMCoach
 from services.coaching.tts import TextToSpeech
@@ -94,9 +91,15 @@ def main():
                 st.session_state.target_sets = int(plan_sets)
                 st.session_state.reps_per_set = int(plan_reps)
                 st.session_state.reps = 0
+                st.session_state.sets_completed = 0
+                st.session_state.current_set_reps = 0
+                st.session_state.workout_completed = False
                 st.session_state.workout_started = True
+                st.session_state.workout_session_id = uuid.uuid4().hex
                 st.session_state.set_cycle_started_at = time.time()
                 st.session_state.last_saved_sets_completed = 0
+                st.session_state.last_notified_sets_completed = 0
+                st.session_state.last_notified_workout_complete = False
 
                 if st.session_state.voice_pipeline:
                     result = st.session_state.voice_pipeline.process_event(
@@ -108,8 +111,6 @@ def main():
                     if result:
                         st.session_state.audio_to_play, st.session_state.coach_feedback = result
 
-                st.session_state.last_notified_sets_completed = 0
-                st.session_state.last_notified_workout_complete = False
                 st.rerun()
         else:
             exercise = st.session_state.get("exercise_type")
@@ -122,6 +123,20 @@ def main():
 
             if end_session_button:
                 st.session_state.workout_started = False
+                user_id = st.session_state.get("user_id", 0)
+                if user_id:
+                    duration = max(1, int(time.time() - st.session_state.get("set_cycle_started_at", time.time())))
+                    save_workout_session(
+                        user_id=user_id,
+                        session_id=st.session_state.get("workout_session_id", uuid.uuid4().hex),
+                        exercise_name=exercise,
+                        target_sets=int(sets or 0),
+                        target_reps=int(reps or 0),
+                        sets_completed=int(st.session_state.get("sets_completed", 0)),
+                        total_reps=int(st.session_state.get("reps", 0)),
+                        duration_seconds=duration,
+                        status="COMPLETED" if st.session_state.get("workout_completed", False) else "ENDED",
+                    )
                 
                 if st.session_state.voice_pipeline:
                     result = st.session_state.voice_pipeline.process_event(
@@ -149,6 +164,9 @@ def main():
             st.metric("Total Reps", f"{total_reps}")
             st.metric("Current Set Reps", f"{current_set_reps} / {reps_per_set}")
             st.metric("Sets Completed", f"{sets_completed} / {target_sets}")
+
+            if st.session_state.get("workout_completed", False):
+                st.success("🎉 Target Achieved! Great job!")
 
             st.divider()
 

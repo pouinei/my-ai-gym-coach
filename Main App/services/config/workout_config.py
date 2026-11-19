@@ -43,6 +43,54 @@ METRICS_FIELDS = {
 }
 
 
+DETECTOR_CONFIG = {
+    "Squats": {
+        "start_threshold": 160.0,
+        "inflection_threshold": 100.0,
+        "hysteresis": 15.0,
+        "min_rep_duration": 0.8,
+        "consecutive_frames": 2,
+        "min_visibility": 0.65,
+    },
+    "Push-ups": {
+        "start_threshold": 155.0,
+        "inflection_threshold": 90.0,
+        "hysteresis": 15.0,
+        "min_rep_duration": 0.7,
+        "consecutive_frames": 2,
+        "min_visibility": 0.65,
+        "hip_sag_tolerance": 0.08,
+    },
+    "Biceps Curls (Dumbbell)": {
+        "start_threshold": 150.0,
+        "inflection_threshold": 50.0,
+        "hysteresis": 15.0,
+        "min_rep_duration": 0.7,
+        "consecutive_frames": 2,
+        "min_visibility": 0.65,
+        "elbow_drift_tolerance": 0.06,
+        "swing_threshold": 15.0,
+    },
+    "Shoulder Press": {
+        "start_threshold": 95.0,
+        "inflection_threshold": 155.0,
+        "hysteresis": 15.0,
+        "min_rep_duration": 0.8,
+        "consecutive_frames": 2,
+        "min_visibility": 0.65,
+    },
+    "Lunges": {
+        "start_threshold": 155.0,
+        "inflection_threshold": 100.0,
+        "hysteresis": 15.0,
+        "min_rep_duration": 0.8,
+        "consecutive_frames": 2,
+        "min_visibility": 0.65,
+        "balance_tolerance": 0.10,
+    },
+}
+
+
 PROMPT = (
     "You are Apna AI Coach, a professional AI gym trainer monitoring a user's workout via live camera.\n\n"
     "### Your Role\n"

@@ -1,4 +1,4 @@
-import math 
+import math
 from abc import ABC, abstractmethod
 
 
@@ -25,13 +25,20 @@ class BaseExercise(ABC):
 
     def get_point(self, landmarks, idx):
         p = landmarks[idx]
-
         return (p.x, p.y)
 
+    def is_visible(self, landmarks, idx, min_vis=0.65) -> bool:
+        if idx >= len(landmarks):
+            return False
+        return getattr(landmarks[idx], "visibility", 0.0) >= min_vis
+
+    def are_visible(self, landmarks, indices, min_vis=0.65) -> bool:
+        return all(self.is_visible(landmarks, idx, min_vis) for idx in indices)
+
     @abstractmethod
-    def process(self, landmarks):
+    def process(self, landmarks, current_time=None) -> dict:
         pass
 
     @abstractmethod
-    def reset(self):
+    def reset(self) -> None:
         pass

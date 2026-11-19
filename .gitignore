@@ -27,6 +27,7 @@ Main App/data.db
 *.log
 st_out.log
 st_err.log
+.pytest_cache/
 .DS_Store
 Thumbs.db
 .idea/
