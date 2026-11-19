@@ -23,6 +23,16 @@ def initial_session_defaults():
         "plan_sets": 3,
         "plan_reps": 10,
 
+        # Voice & Coaching
+        "voice_muted": False,
+        "last_voiced_rep": 0,
+        "last_voiced_set": 0,
+        "audio_event_id": "",
+        "last_played_audio_event_id": "",
+        "audio_to_play": None,
+        "coach_feedback": "",
+        "voice_status": "Voice Active",
+
         # Common Angles
         "knee_angle": 0,
         "back_angle": 0,

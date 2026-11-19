@@ -57,7 +57,8 @@ def main():
 
     initial_session_defaults()
 
-    if "voice_pipeline" not in st.session_state:
+    if "voice_pipeline" not in st.session_state or st.session_state.voice_pipeline is None:
+        groq_client = None
         try:
             api_key = os.environ.get("GROQ_API_KEY", "").strip()
 
@@ -66,13 +67,12 @@ def main():
 
             if api_key:
                 groq_client = Groq(api_key=api_key)
-                llm_coach = LLMCoach(groq_client)
-                tts = TextToSpeech()
-                st.session_state.voice_pipeline = VoicePipeline(llm_coach, tts)
-            else:
-                st.session_state.voice_pipeline = None
         except Exception as e:
-            st.session_state.voice_pipeline = None
+            groq_client = None
+
+        llm_coach = LLMCoach(groq_client=groq_client)
+        tts = TextToSpeech()
+        st.session_state.voice_pipeline = VoicePipeline(llm_coach, tts)
 
     workout_started = st.session_state.get("workout_started", False)
     
@@ -111,6 +111,8 @@ def main():
                 st.session_state.last_saved_sets_completed = 0
                 st.session_state.last_notified_sets_completed = 0
                 st.session_state.last_notified_workout_complete = False
+                st.session_state.last_voiced_rep = 0
+                st.session_state.last_voiced_set = 0
 
                 if st.session_state.voice_pipeline:
                     result = st.session_state.voice_pipeline.process_event(
@@ -120,7 +122,11 @@ def main():
                     )
                     
                     if result:
-                        st.session_state.audio_to_play, st.session_state.coach_feedback = result
+                        if len(result) == 3:
+                            st.session_state.audio_to_play, st.session_state.coach_feedback, st.session_state.audio_event_id = result
+                        else:
+                            st.session_state.audio_to_play, st.session_state.coach_feedback = result
+                            st.session_state.audio_event_id = uuid.uuid4().hex
 
                 st.rerun()
         else:
@@ -156,9 +162,56 @@ def main():
                         metrics={}
                     )
                     if result:
-                        st.session_state.audio_to_play, st.session_state.coach_feedback = result
+                        if len(result) == 3:
+                            st.session_state.audio_to_play, st.session_state.coach_feedback, st.session_state.audio_event_id = result
+                        else:
+                            st.session_state.audio_to_play, st.session_state.coach_feedback = result
+                            st.session_state.audio_event_id = uuid.uuid4().hex
 
                 st.rerun()
+
+        st.divider()
+        st.subheader("🎙️ Voice Coach")
+
+        is_muted = st.session_state.get("voice_muted", False)
+        voice_pipe = st.session_state.get("voice_pipeline")
+
+        if not voice_pipe:
+            status_text = "⚠️ Voice Unavailable"
+        elif is_muted:
+            status_text = "🔇 Muted"
+        else:
+            has_groq = bool(getattr(voice_pipe.llm, "client", None))
+            mode_desc = "AI (Groq)" if has_groq else "Smart Fallback"
+            status_text = f"🔊 Active ({mode_desc})"
+
+        st.caption(f"**Status:** {status_text}")
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            mute_lbl = "🔊 Unmute" if is_muted else "🔇 Mute"
+            if st.button(mute_lbl, width="stretch", key="mute_toggle_btn"):
+                st.session_state.voice_muted = not is_muted
+                if voice_pipe:
+                    voice_pipe.muted = st.session_state.voice_muted
+                st.rerun()
+
+        with col_m2:
+            if st.button("🧪 Test Voice", width="stretch", key="test_voice_btn"):
+                test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
+                if voice_pipe:
+                    audio_data = voice_pipe.tts.speak(test_phrase)
+                    if audio_data:
+                        st.session_state.audio_to_play = audio_data
+                        st.session_state.coach_feedback = test_phrase
+                        st.session_state.audio_event_id = uuid.uuid4().hex
+                        st.session_state.voice_test_msg = "✅ Audio generated & sent to player!"
+                    else:
+                        st.session_state.voice_test_msg = "⚠️ TTS failed to generate audio."
+                st.rerun()
+
+        if st.session_state.get("voice_test_msg"):
+            st.caption(st.session_state.voice_test_msg)
 
         if workout_started:
             st.divider()
@@ -214,12 +267,13 @@ def main():
     st.title("AI Real-time GYM Coach")
     st.markdown("#### Real-time pose detection with proactive AI voice coaching")
  
-    if st.session_state.get("audio_to_play"):
-        autoplay_audio(st.session_state.audio_to_play)
-
     if st.session_state.get("coach_feedback"):
         st.markdown("")
         st.success(f"🤖 **Coach:** {st.session_state.coach_feedback}")
+
+    if not st.session_state.get("voice_muted", False) and st.session_state.get("audio_to_play"):
+        event_id = st.session_state.get("audio_event_id", "")
+        autoplay_audio(st.session_state.audio_to_play, text=st.session_state.get("coach_feedback", ""), event_id=event_id)
 
     if not workout_started:
         st.markdown(
