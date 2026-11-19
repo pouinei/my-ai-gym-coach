@@ -97,7 +97,7 @@ def test_4_one_rep_produces_at_most_one_audio_event():
 
 
 # ==============================================================================
-# TEST 5: Duplicate Streamlit reruns do not duplicate playback
+# TEST 5: Duplicate Streamlit reruns maintain DOM audio element without restarting
 # ==============================================================================
 def test_5_duplicate_reruns_do_not_duplicate_playback():
     import streamlit as st
@@ -107,16 +107,45 @@ def test_5_duplicate_reruns_do_not_duplicate_playback():
 
     st.session_state["last_played_audio_event_id"] = ""
 
-    with mock.patch("streamlit.audio") as mock_st_audio:
-        # First execution (new event)
+    with mock.patch("streamlit.audio") as mock_st_audio, mock.patch("streamlit.components.v1.html") as mock_html:
+        # First execution (new event): renders with autoplay=True and injects JS
         autoplay_audio(fake_audio, text="Good rep", event_id=event_id)
         assert mock_st_audio.call_count == 1
+        assert mock_st_audio.call_args[1]["autoplay"] is True
+        assert mock_html.call_count == 1
         assert st.session_state["last_played_audio_event_id"] == event_id
 
-        # Second execution (simulated Streamlit rerun 250ms later with same event_id)
+        # Second execution (simulated Streamlit rerun 250ms later with same event_id):
+        # Keeps st.audio mounted in DOM with autoplay=False so playback is not aborted
         autoplay_audio(fake_audio, text="Good rep", event_id=event_id)
-        # Should NOT call st.audio again!
-        assert mock_st_audio.call_count == 1
+        assert mock_st_audio.call_count == 2
+        assert mock_st_audio.call_args[1]["autoplay"] is False
+        # JS autoplay trigger is NOT called again on rerun
+        assert mock_html.call_count == 1
+
+
+# ==============================================================================
+# TEST 5b: Audio byte validation tests
+# ==============================================================================
+def test_5b_validate_audio_bytes():
+    # Valid MPEG frame sync
+    valid_mpeg = b"\xff\xfb\x90\x00" + b"\x00" * 120
+    assert TextToSpeech.validate_audio_bytes(valid_mpeg) is True
+
+    # Valid ID3 header
+    valid_id3 = b"ID3\x03\x00\x00\x00" + b"\x00" * 120
+    assert TextToSpeech.validate_audio_bytes(valid_id3) is True
+
+    # Empty or None
+    assert TextToSpeech.validate_audio_bytes(None) is False
+    assert TextToSpeech.validate_audio_bytes(b"") is False
+
+    # Too short (< 100 bytes)
+    assert TextToSpeech.validate_audio_bytes(b"\xff\xfb\x90\x00") is False
+
+    # Corrupt / non-audio data
+    corrupt = b"\x00\x11\x22\x33" * 30
+    assert TextToSpeech.validate_audio_bytes(corrupt) is False
 
 
 # ==============================================================================

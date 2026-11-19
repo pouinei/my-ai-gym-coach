@@ -3,6 +3,7 @@ import uuid
 import logging
 from typing import Optional, Tuple, Dict, Any
 import streamlit as st
+import streamlit.components.v1 as components
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,6 @@ class VoicePipeline:
 
         # Rate-limiting / anti-spam for minor cues
         if not is_major_event:
-            # Need at least 3.5 seconds between continuous form checks
             if (now - self.last_spoken_at) < 3.5:
                 return None
             if not issue and not stage_cue and event == "ongoing_form_check":
@@ -184,18 +184,46 @@ class VoicePipeline:
 def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> None:
     """
     Renders the audio element into Streamlit.
-    Enforces single-play per event_id so reruns every 250ms do not duplicate or cancel audio.
+    Ensures:
+    1. Audio is NOT removed on subsequent 250ms reruns (persists in DOM).
+    2. Uses autoplay=True on first render of an event.
+    3. Injects JS helper to ensure unmuted volume=1.0 and invoke play().
     """
-    if not audio_bytes:
+    if not audio_bytes or len(audio_bytes) < 64:
         return
 
     last_played = st.session_state.get("last_played_audio_event_id")
-    if event_id and last_played == event_id:
-        return
+    is_first_render = bool(event_id and event_id != last_played)
 
-    if event_id:
+    if is_first_render:
         st.session_state["last_played_audio_event_id"] = event_id
 
-    # Render a visible, clean audio control so browser autoplay policy is satisfied
-    # and users with autoplay restrictions can play audio directly.
-    st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+    # Always render the audio widget so Streamlit does NOT unmount it on 250ms reruns!
+    # Pass autoplay=True on first render, and autoplay=False on subsequent 250ms reruns to avoid restarting playback.
+    st.audio(audio_bytes, format="audio/mp3", autoplay=is_first_render)
+
+    if is_first_render:
+        components.html(
+            """
+            <script>
+            (function() {
+                try {
+                    const parentDoc = window.parent.document;
+                    const audios = parentDoc.querySelectorAll('audio');
+                    if (audios.length > 0) {
+                        const a = audios[audios.length - 1];
+                        a.volume = 1.0;
+                        a.muted = false;
+                        const p = a.play();
+                        if (p !== undefined) {
+                            p.catch(function(e) {
+                                console.warn('[Apna Coach Voice] Autoplay waiting for user interaction:', e);
+                            });
+                        }
+                    }
+                } catch (err) {}
+            })();
+            </script>
+            """,
+            height=0,
+        )

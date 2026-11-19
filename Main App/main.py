@@ -196,22 +196,52 @@ def main():
                     voice_pipe.muted = st.session_state.voice_muted
                 st.rerun()
 
+        test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
         with col_m2:
             if st.button("🧪 Test Voice", width="stretch", key="test_voice_btn"):
-                test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
                 if voice_pipe:
                     audio_data = voice_pipe.tts.speak(test_phrase)
-                    if audio_data:
+                    if audio_data and voice_pipe.tts.validate_audio_bytes(audio_data):
+                        test_id = uuid.uuid4().hex
+                        st.session_state.voice_test_audio = audio_data
+                        st.session_state.voice_test_id = test_id
                         st.session_state.audio_to_play = audio_data
                         st.session_state.coach_feedback = test_phrase
-                        st.session_state.audio_event_id = uuid.uuid4().hex
-                        st.session_state.voice_test_msg = "✅ Audio generated & sent to player!"
+                        st.session_state.audio_event_id = test_id
+                        st.session_state.voice_confirmed = None
+                        st.session_state.voice_test_issue = None
                     else:
-                        st.session_state.voice_test_msg = "⚠️ TTS failed to generate audio."
-                st.rerun()
+                        st.session_state.voice_test_audio = None
+                        st.session_state.voice_test_issue = True
 
-        if st.session_state.get("voice_test_msg"):
-            st.caption(st.session_state.voice_test_msg)
+        if st.session_state.get("voice_test_audio"):
+            st.markdown("---")
+            st.markdown("**🔊 Test Voice Player**")
+            st.audio(st.session_state.voice_test_audio, format="audio/mp3", autoplay=True)
+            st.caption(f"_{test_phrase}_")
+
+            st.markdown("**Did you hear the coach speak?**")
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                if st.button("✅ Yes, loud & clear", key="voice_confirm_yes", width="stretch"):
+                    st.session_state.voice_confirmed = True
+                    st.session_state.voice_test_issue = False
+                    st.rerun()
+            with col_v2:
+                if st.button("❌ No sound", key="voice_confirm_no", width="stretch"):
+                    st.session_state.voice_confirmed = False
+                    st.session_state.voice_test_issue = True
+                    st.rerun()
+
+            if st.session_state.get("voice_confirmed") is True:
+                st.success("🎉 Voice playback confirmed working on your browser!")
+            elif st.session_state.get("voice_test_issue") is True:
+                st.warning(
+                    "⚠️ **No sound heard:**\n"
+                    "1. Click the **Play (▶)** button on the player above.\n"
+                    "2. Check that your device and browser tab volume is unmuted.\n"
+                    "3. Ensure browser permissions allow audio playback on this site."
+                )
 
         if workout_started:
             st.divider()

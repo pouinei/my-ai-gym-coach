@@ -32,6 +32,10 @@ def initial_session_defaults():
         "audio_to_play": None,
         "coach_feedback": "",
         "voice_status": "Voice Active",
+        "voice_test_audio": None,
+        "voice_confirmed": None,
+        "voice_test_issue": None,
+        "voice_test_id": "",
 
         # Common Angles
         "knee_angle": 0,
