@@ -174,7 +174,7 @@ def test_10_duplicate_audio_event_prevention():
 
 
 # ==============================================================================
-# TEST 11: Audio persistence across Streamlit reruns
+# TEST 11: Audio persistence across Streamlit reruns without competing players
 # ==============================================================================
 def test_11_audio_persistence_across_streamlit_reruns():
     import streamlit as st
@@ -185,20 +185,17 @@ def test_11_audio_persistence_across_streamlit_reruns():
     st.session_state["last_played_audio_event_id"] = ""
 
     with mock.patch("streamlit.audio") as mock_st_audio, mock.patch("streamlit.components.v1.html") as mock_html:
-        # First execution (new event): renders with autoplay=True and injects JS
+        # First execution (new event): renders canonical player with auto_play=True
         autoplay_audio(fake_audio, text="Good rep", event_id=event_id)
-        assert mock_st_audio.call_count == 1
-        assert mock_st_audio.call_args[1]["autoplay"] is True
+        assert mock_st_audio.call_count == 0  # No duplicate competing audio player!
         assert mock_html.call_count == 1
         assert st.session_state["last_played_audio_event_id"] == event_id
 
         # Second execution (simulated Streamlit rerun 250ms later with same event_id):
-        # Keeps st.audio mounted in DOM with autoplay=False so playback is not aborted
+        # Keeps player mounted in DOM with auto_play=False so active playback is not aborted
         autoplay_audio(fake_audio, text="Good rep", event_id=event_id)
-        assert mock_st_audio.call_count == 2
-        assert mock_st_audio.call_args[1]["autoplay"] is False
-        # JS autoplay trigger is NOT called again on rerun
-        assert mock_html.call_count == 1
+        assert mock_st_audio.call_count == 0  # No duplicate competing audio player!
+        assert mock_html.call_count == 2
 
 
 # ==============================================================================
@@ -788,7 +785,7 @@ def test_35_static_welcome_voice_precache():
 
 
 # ==============================================================================
-# TEST 36: autoplay_audio delegates to render_voice_player
+# TEST 36: autoplay_audio delegates to render_voice_player without competing players
 # ==============================================================================
 def test_36_autoplay_audio_delegates_to_render_voice_player():
     import streamlit as st
@@ -796,11 +793,112 @@ def test_36_autoplay_audio_delegates_to_render_voice_player():
     fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
     st.session_state["last_played_audio_event_id"] = ""
 
-    with mock.patch("services.coaching.voice_pipeline.render_voice_player") as mock_render, mock.patch("streamlit.audio"):
+    with mock.patch("services.coaching.voice_pipeline.render_voice_player") as mock_render, mock.patch("streamlit.audio") as mock_st_audio:
         autoplay_audio(fake_audio, text="Set complete", event_id="ev-del-1")
         assert mock_render.call_count == 1
+        assert mock_st_audio.call_count == 0  # No competing audio players
         call_args = mock_render.call_args[0]
         assert call_args[0] == fake_audio
         assert mock_render.call_args[1]["event_id"] == "ev-del-1"
         assert mock_render.call_args[1]["auto_play"] is True
+
+
+# ==============================================================================
+# TEST 37: Import smoke test for all packages, services, and __init__.py exports
+# ==============================================================================
+def test_37_import_smoke_test_all_services_and_packages():
+    # Test top-level package and subpackage imports
+    import services
+    import services.auth
+    import services.coaching
+    import services.config
+    import services.persistence
+    import services.state
+    import services.tracking
+    import services.ui
+    import services.vision
+    import core
+    import detectors
+
+    # Test individual public exports from package __init__ files
+    from services.auth import render_login_wall
+    from services.coaching import render_voice_player, VoicePipeline, autoplay_audio, TextToSpeech, validate_audio_bytes, LLMCoach, resolve_groq_model
+    from services.persistence import init_db, save_workout_session, get_users_exercises, get_or_create_user, add_exercise
+    from services.state import initial_session_defaults, WorkoutStateManager, WorkoutStatus
+    from services.config import EXERCISE_OPTIONS, get_rtc_configuration
+    from services.tracking import sync_metrics_update
+    from services.ui import load_css, inject_local_font
+    from services.vision import VideoProcessorClass
+    from core import BaseExercise, RepetitionStateMachine
+    from detectors import SquatDetector, PushUpDetector, BicepsCurlDetector, ShoulderPressDetector, LungesDetector
+
+    assert callable(render_login_wall)
+    assert callable(render_voice_player)
+    assert callable(autoplay_audio)
+    assert callable(resolve_groq_model)
+    assert callable(init_db)
+    assert callable(initial_session_defaults)
+    assert callable(sync_metrics_update)
+    assert len(EXERCISE_OPTIONS) >= 5
+
+
+# ==============================================================================
+# TEST 38: Groq model configuration and dynamic account inspection
+# ==============================================================================
+def test_38_resolve_groq_model_configuration():
+    from services.coaching.llm import resolve_groq_model
+    import os
+
+    # 1. Fallback when no client and no env var
+    orig_env = os.environ.get("GROQ_MODEL")
+    try:
+        if "GROQ_MODEL" in os.environ:
+            del os.environ["GROQ_MODEL"]
+
+        model = resolve_groq_model(client=None)
+        assert model == "llama-3.1-8b-instant"
+
+        # 2. Configurable via environment variable
+        os.environ["GROQ_MODEL"] = "custom-test-model"
+        assert resolve_groq_model(client=None) == "custom-test-model"
+
+        # 3. Dynamic inspection when client is provided
+        mock_client = mock.MagicMock()
+        m1 = mock.MagicMock(); m1.id = "llama-3.1-8b-instant"
+        m2 = mock.MagicMock(); m2.id = "llama-3.3-70b-versatile"
+        mock_client.models.list.return_value.data = [m1, m2]
+
+        # Explicit request
+        assert resolve_groq_model(mock_client, requested_model="llama-3.3-70b-versatile") == "llama-3.3-70b-versatile"
+
+        # Preferred auto-selection from account
+        del os.environ["GROQ_MODEL"]
+        assert resolve_groq_model(mock_client) == "llama-3.1-8b-instant"
+
+    finally:
+        if orig_env is not None:
+            os.environ["GROQ_MODEL"] = orig_env
+        elif "GROQ_MODEL" in os.environ:
+            del os.environ["GROQ_MODEL"]
+
+
+# ==============================================================================
+# TEST 39: LLMCoach uses verified model and falls back to deterministic cue
+# ==============================================================================
+def test_39_llm_coach_dynamic_model_usage_and_fallback():
+    from services.coaching.llm import LLMCoach
+
+    mock_client = mock.MagicMock()
+    m = mock.MagicMock(); m.id = "llama-3.1-8b-instant"
+    mock_client.models.list.return_value.data = [m]
+
+    coach = LLMCoach(groq_client=mock_client)
+    assert coach.model == "llama-3.1-8b-instant"
+
+    # Test error fallback to deterministic cue
+    mock_client.chat.completions.create.side_effect = Exception("Groq rate limit exceeded (429)")
+    cue = coach.give_feedback("ongoing_form_check", issue="Knees caving inward (valgus collapse)", exercise="Squats")
+    assert "knees are caving inward" in cue.lower()
+    assert "drive your knees outward" in cue.lower()
+
 

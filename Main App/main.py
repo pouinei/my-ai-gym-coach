@@ -10,10 +10,12 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-# Ensure the app directory is on sys.path and load environment variables
+# Ensure the app directory and project root are on sys.path and load environment variables
 APP_DIR = Path(__file__).resolve().parent
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
+PROJECT_ROOT = APP_DIR.parent
+for _p in [str(APP_DIR), str(PROJECT_ROOT)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 load_dotenv()
 

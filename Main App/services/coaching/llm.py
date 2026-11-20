@@ -1,8 +1,69 @@
+import os
 import logging
-from typing import Optional
+from typing import Optional, List, Set
 from services.config.workout_config import PROMPT
 
 logger = logging.getLogger(__name__)
+
+# List of preferred Groq chat completion models in order of capability and stability
+PREFERRED_GROQ_MODELS = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama-3.2-3b-preview",
+    "llama-3.2-1b-preview",
+    "llama3-8b-8192",
+]
+
+
+def resolve_groq_model(client=None, requested_model: Optional[str] = None) -> str:
+    """
+    Inspects Groq model configuration and selects a model actually available to the account.
+    - Respects explicit requested_model, GROQ_MODEL environment variable, or Streamlit secrets.
+    - If client is provided, queries client.models.list() to verify availability.
+    - Falls back gracefully to proven active models without guessing.
+    """
+    env_model = os.environ.get("GROQ_MODEL", "").strip()
+    secret_model = ""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            if "GROQ_MODEL" in st.secrets:
+                secret_model = str(st.secrets["GROQ_MODEL"]).strip()
+            elif "groq" in st.secrets and isinstance(st.secrets["groq"], dict) and "model" in st.secrets["groq"]:
+                secret_model = str(st.secrets["groq"]["model"]).strip()
+    except Exception:
+        pass
+
+    target_candidate = requested_model or secret_model or env_model
+
+    if client is not None:
+        try:
+            models_response = client.models.list()
+            available_ids: Set[str] = set()
+            data = getattr(models_response, "data", None)
+            if data is not None:
+                for m in data:
+                    mid = getattr(m, "id", None)
+                    if mid:
+                        available_ids.add(str(mid))
+
+            if available_ids:
+                if target_candidate and target_candidate in available_ids:
+                    logger.info(f"Using requested Groq model verified in account: {target_candidate}")
+                    return target_candidate
+
+                for cand in PREFERRED_GROQ_MODELS:
+                    if cand in available_ids:
+                        logger.info(f"Selected verified active Groq model from account: {cand}")
+                        return cand
+
+                chosen = next(iter(available_ids))
+                logger.info(f"Selected first available Groq model from account: {chosen}")
+                return chosen
+        except Exception as e:
+            logger.warning(f"Could not query Groq models.list() ({e}); proceeding with configured or fallback model.")
+
+    return target_candidate or "llama-3.1-8b-instant"
 
 # Standard natural, full-sentence coaching cues for offline/fallback mode
 DEFAULT_COACHING_CUES = {
@@ -95,15 +156,16 @@ def get_deterministic_cue(event: str, issue: Optional[str] = None, exercise: Opt
 class LLMCoach:
     """
     Hybrid AI Coach:
-    - Uses Groq LLaMA-3.3-70B for dynamic, high-energy coaching when available
+    - Uses verified active Groq model (e.g. LLaMA-3.1-8B / LLaMA-3.3-70B) for dynamic, high-energy coaching
     - Automatically falls back to deterministic local cues on rate limits, errors, or offline mode
     - Never throws an uncaught exception
     """
 
-    def __init__(self, groq_client=None):
+    def __init__(self, groq_client=None, model: Optional[str] = None):
         self.client = groq_client
         self.history = []
         self.system_prompt = PROMPT
+        self.model = resolve_groq_model(groq_client, requested_model=model)
 
     def give_feedback(self, event: str, issue: Optional[str] = None, exercise: Optional[str] = None) -> str:
         fallback = get_deterministic_cue(event, issue, exercise)
@@ -125,7 +187,7 @@ class LLMCoach:
 
         try:
             response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=self.model,
                 messages=messages,
                 temperature=0.4,
                 timeout=3.0,
@@ -136,5 +198,5 @@ class LLMCoach:
             self.history.append({"role": "assistant", "content": text})
             return text if text else fallback
         except Exception as e:
-            logger.warning(f"Groq API call failed ({e}); using local deterministic coaching cue.")
+            logger.warning(f"Groq API call failed on model '{self.model}' ({e}); using local deterministic coaching cue.")
             return fallback

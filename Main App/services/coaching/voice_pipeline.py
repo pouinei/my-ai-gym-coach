@@ -10,6 +10,13 @@ from services.coaching.llm import get_deterministic_cue
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "VoicePipeline",
+    "autoplay_audio",
+    "render_voice_player",
+    "STAGE_GUIDANCE_CUES",
+]
+
 STAGE_GUIDANCE_CUES = {
     "Shoulder Press": {
         "moving": "Press upward with control and extend your elbows toward full lockout.",
@@ -617,12 +624,12 @@ if (audio) {{
 
 def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> None:
     """
-    Renders the audio element into Streamlit with browser-level non-interruption protection.
+    Renders the canonical HTML5 audio element into Streamlit with browser-level non-interruption protection.
     Ensures:
     1. Audio is valid and decodable via validate_audio_bytes.
     2. Keeps audio mounted in DOM during Streamlit 250ms reruns without restarting.
     3. Triggers autoplay=True on first render of a new event_id.
-    4. Preserves native HTML5 Play/Pause/Volume controls if browser blocks autoplay.
+    4. Avoids duplicate competing audio players by delegating cleanly to render_voice_player.
     5. Injects an audited HTML5 player with direct manual Play button, volume/mute assurance, and visible errors.
     """
     if not audio_bytes or not validate_audio_bytes(audio_bytes):
@@ -634,8 +641,11 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
     if is_first_render:
         st.session_state["last_played_audio_event_id"] = event_id
 
-    # Always render the audio widget so Streamlit does NOT unmount it on 250ms reruns!
-    st.audio(audio_bytes, format="audio/mp3", autoplay=is_first_render)
-
-    if is_first_render:
-        render_voice_player(audio_bytes, text=text, event_id=event_id, auto_play=True, height=78)
+    # Canonical single-player delivery without duplicate competing players
+    render_voice_player(
+        audio_bytes,
+        text=text,
+        event_id=event_id,
+        auto_play=is_first_render,
+        height=78,
+    )
