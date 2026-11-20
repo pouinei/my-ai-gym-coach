@@ -333,6 +333,288 @@ class VoicePipeline:
         return audio_bytes, text, event_id
 
 
+def render_voice_player(audio_bytes: bytes, text: str = "", event_id: str = "", auto_play: bool = True, height: int = 78) -> None:
+    """
+    Renders an interactive, audited HTML5 audio player directly inside Streamlit:
+    - Triggers audio.play() directly from the manual Play button click handler with volume 1.0 and unmuted assurance.
+    - Resumes suspended Web Audio API AudioContext if needed.
+    - Displays actual playback errors visibly in the UI instead of silently swallowing exceptions.
+    - Shows real-time source payload, duration, volume, mute, and playback state badges.
+    - Automatically attempts autoplay upon initial render with graceful fallback to manual play button.
+    """
+    if not audio_bytes or not validate_audio_bytes(audio_bytes):
+        st.warning("⚠️ Invalid or undecodable audio format.")
+        return
+
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    payload_size = len(audio_bytes)
+    safe_id = "".join(c for c in (event_id or "default") if c.isalnum() or c in "-_")
+    autoplay_attr = "autoplay" if auto_play else ""
+
+    html_code = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{
+    margin: 0;
+    padding: 2px 4px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: transparent;
+    color: #e0e0e0;
+  }}
+  .player-box {{
+    background: #141923;
+    border: 1px solid #2d3748;
+    border-radius: 6px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }}
+  .controls-row {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }}
+  .play-btn {{
+    background: #ff4b4b;
+    color: #ffffff;
+    border: none;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.15s ease;
+  }}
+  .play-btn:hover {{
+    background: #ff3333;
+  }}
+  .badge {{
+    font-size: 11px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: #232b3b;
+    color: #cbd5e0;
+  }}
+  .status-badge {{
+    font-size: 11px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-weight: bold;
+  }}
+  .status-idle {{ background: #4a5568; color: #fff; }}
+  .status-playing {{ background: #22543d; color: #9ae6b4; }}
+  .status-error {{ background: #742a2a; color: #feb2b2; }}
+  .status-blocked {{ background: #7b341e; color: #fbd38d; }}
+  .error-box {{
+    color: #feb2b2;
+    font-size: 11px;
+    background: #441a1a;
+    padding: 3px 6px;
+    border-radius: 3px;
+    border-left: 3px solid #f56565;
+    display: none;
+    margin-top: 2px;
+  }}
+  .progress-bar-container {{
+    width: 100%;
+    height: 3px;
+    background: #232b3b;
+    border-radius: 2px;
+    overflow: hidden;
+  }}
+  .progress-bar {{
+    height: 100%;
+    width: 0%;
+    background: #ff4b4b;
+    transition: width 0.1s linear;
+  }}
+</style>
+</head>
+<body>
+<div class="player-box" id="apna-player-{safe_id}">
+  <audio id="apna-voice-el" preload="auto" src="data:audio/mp3;base64,{b64}" {autoplay_attr}></audio>
+  
+  <div class="controls-row">
+    <button id="apna-voice-btn" class="play-btn" onclick="startAudio()">
+      <span id="btn-icon">▶</span> <span id="btn-text">Play Coach Voice</span>
+    </button>
+    <span id="playback-badge" class="status-badge status-idle">IDLE</span>
+    <span class="badge" id="time-badge">0.0s / 0.0s</span>
+    <span class="badge" id="vol-badge">Vol: 100%</span>
+    <span class="badge" id="src-badge">{payload_size:,} B</span>
+  </div>
+
+  <div class="progress-bar-container">
+    <div id="playback-progress" class="progress-bar"></div>
+  </div>
+
+  <div id="error-display" class="error-box"></div>
+</div>
+
+<script>
+var audio = document.getElementById('apna-voice-el');
+var btn = document.getElementById('apna-voice-btn');
+var btnIcon = document.getElementById('btn-icon');
+var btnText = document.getElementById('btn-text');
+var badge = document.getElementById('playback-badge');
+var timeBadge = document.getElementById('time-badge');
+var volBadge = document.getElementById('vol-badge');
+var errBox = document.getElementById('error-display');
+var progress = document.getElementById('playback-progress');
+
+function setStatus(st, text) {{
+  if (!badge) return;
+  badge.className = 'status-badge status-' + st;
+  badge.textContent = text;
+}}
+
+function showError(msg) {{
+  if (!errBox) return;
+  errBox.style.display = 'block';
+  errBox.textContent = '⚠️ ' + msg;
+  setStatus('error', 'ERROR');
+}}
+
+function clearError() {{
+  if (!errBox) return;
+  errBox.style.display = 'none';
+  errBox.textContent = '';
+}}
+
+function updateTime() {{
+  if (!audio) return;
+  var cur = audio.currentTime || 0;
+  var dur = audio.duration || 0;
+  if (timeBadge) timeBadge.textContent = cur.toFixed(1) + 's / ' + (dur ? dur.toFixed(1) : '?') + 's';
+  if (volBadge) volBadge.textContent = 'Vol: ' + Math.round((audio.volume || 1) * 100) + '%' + (audio.muted ? ' (M)' : '');
+  if (dur > 0 && progress) {{
+    progress.style.width = Math.min(100, (cur / dur) * 100) + '%';
+  }}
+}}
+
+function startAudio() {{
+  clearError();
+  if (!audio) {{
+    showError('Audio element missing from DOM.');
+    return;
+  }}
+
+  // 1. Ensure volume and unmute directly in click handler
+  audio.muted = false;
+  audio.volume = 1.0;
+
+  // 2. Resume Web Audio AudioContext if suspended
+  try {{
+    var AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {{
+      var ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {{
+        ctx.resume();
+      }}
+    }}
+  }} catch (e) {{
+    console.warn('[Apna Audio] AudioContext init warning:', e);
+  }}
+
+  // 3. Also unmute and trigger top-level audio elements if reachable
+  try {{
+    if (window.parent && window.parent.document) {{
+      var pAudios = window.parent.document.querySelectorAll('audio');
+      for (var i = 0; i < pAudios.length; i++) {{
+        pAudios[i].muted = false;
+        pAudios[i].volume = 1.0;
+        var pp = pAudios[i].play();
+        if (pp !== undefined) pp.catch(function() {{}});
+      }}
+    }}
+  }} catch (e) {{}}
+
+  // 4. Trigger audio.play() directly from the click handler
+  var promise = audio.play();
+  if (promise !== undefined) {{
+    promise.then(function() {{
+      setStatus('playing', 'PLAYING');
+      if (btnIcon) btnIcon.textContent = '⏸';
+      if (btnText) btnText.textContent = 'Pause';
+      btn.onclick = handlePause;
+      updateTime();
+    }}).catch(function(err) {{
+      var errMsg = 'Playback failed: ' + (err.name || 'Error') + ' - ' + (err.message || 'Unknown browser restriction');
+      if (err.name === 'NotAllowedError') {{
+        errMsg = 'Browser blocked playback. Click Play again or allow audio permission.';
+      }}
+      showError(errMsg);
+    }});
+  }}
+}}
+
+function handlePause() {{
+  if (audio) {{
+    audio.pause();
+    setStatus('idle', 'PAUSED');
+    if (btnIcon) btnIcon.textContent = '▶';
+    if (btnText) btnText.textContent = 'Resume';
+    btn.onclick = startAudio;
+  }}
+}}
+
+if (audio) {{
+  audio.addEventListener('play', function() {{
+    setStatus('playing', 'PLAYING');
+    if (btnIcon) btnIcon.textContent = '⏸';
+    if (btnText) btnText.textContent = 'Pause';
+    btn.onclick = handlePause;
+  }});
+  audio.addEventListener('pause', function() {{
+    if (!audio.ended) {{
+      setStatus('idle', 'PAUSED');
+      if (btnIcon) btnIcon.textContent = '▶';
+      if (btnText) btnText.textContent = 'Resume';
+      btn.onclick = startAudio;
+    }}
+  }});
+  audio.addEventListener('ended', function() {{
+    setStatus('idle', 'COMPLETED');
+    if (btnIcon) btnIcon.textContent = '🔄';
+    if (btnText) btnText.textContent = 'Replay Voice';
+    btn.onclick = startAudio;
+    if (progress) progress.style.width = '100%';
+  }});
+  audio.addEventListener('timeupdate', updateTime);
+  audio.addEventListener('loadedmetadata', updateTime);
+  audio.addEventListener('error', function(e) {{
+    var code = audio.error ? audio.error.code : 'unknown';
+    var msg = audio.error ? audio.error.message : '';
+    showError('Media decode error (Code ' + code + '): ' + (msg || 'Corrupted or unplayable format'));
+  }});
+
+  // Attempt initial autoplay
+  audio.muted = false;
+  audio.volume = 1.0;
+  var autoPromise = audio.play();
+  if (autoPromise !== undefined) {{
+    autoPromise.then(function() {{
+      setStatus('playing', 'PLAYING');
+    }}).catch(function(err) {{
+      setStatus('blocked', 'CLICK PLAY');
+      console.warn('[Apna Audio] Autoplay blocked by browser policy:', err);
+    }});
+  }}
+}}
+</script>
+</body>
+</html>"""
+
+    components.html(html_code, height=height)
+
+
 def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> None:
     """
     Renders the audio element into Streamlit with browser-level non-interruption protection.
@@ -341,7 +623,7 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
     2. Keeps audio mounted in DOM during Streamlit 250ms reruns without restarting.
     3. Triggers autoplay=True on first render of a new event_id.
     4. Preserves native HTML5 Play/Pause/Volume controls if browser blocks autoplay.
-    5. Injects an isolated fallback player inside components.html without cross-origin exceptions.
+    5. Injects an audited HTML5 player with direct manual Play button, volume/mute assurance, and visible errors.
     """
     if not audio_bytes or not validate_audio_bytes(audio_bytes):
         return
@@ -356,42 +638,4 @@ def autoplay_audio(audio_bytes: bytes, text: str = "", event_id: str = "") -> No
     st.audio(audio_bytes, format="audio/mp3", autoplay=is_first_render)
 
     if is_first_render:
-        b64 = base64.b64encode(audio_bytes).decode("ascii")
-        components.html(
-            f"""
-            <div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; gap: 8px;">
-                <audio id="apna-voice-el" src="data:audio/mp3;base64,{b64}" preload="auto" autoplay></audio>
-                <button id="apna-voice-btn" onclick="startAudio()" style="display:none; background:#ff4b4b; color:#ffffff; border:none; padding:4px 10px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer;">
-                    ▶ Click to Hear Coach Voice
-                </button>
-            </div>
-            <script>
-            function startAudio() {{
-                const el = document.getElementById('apna-voice-el');
-                if (el) {{
-                    el.play().then(function() {{
-                        const btn = document.getElementById('apna-voice-btn');
-                        if (btn) btn.style.display = 'none';
-                    }}).catch(function(err) {{
-                        console.warn('[Apna Voice] Manual playback error:', err);
-                    }});
-                }}
-            }}
-            (function() {{
-                const el = document.getElementById('apna-voice-el');
-                if (el) {{
-                    el.volume = 1.0;
-                    const p = el.play();
-                    if (p !== undefined) {{
-                        p.catch(function(err) {{
-                            console.warn('[Apna Voice] Browser blocked autoplay; showing manual button:', err);
-                            const btn = document.getElementById('apna-voice-btn');
-                            if (btn) btn.style.display = 'inline-block';
-                        }});
-                    }}
-                }}
-            }})();
-            </script>
-            """,
-            height=28,
-        )
+        render_voice_player(audio_bytes, text=text, event_id=event_id, auto_play=True, height=78)

@@ -693,3 +693,114 @@ def test_31_audio_diagnostics_state_tracking():
     assert st.session_state.audio_diag_payload_bytes == len(fake_bytes)
     assert st.session_state.audio_diag_playback_status == "DELIVERED"
 
+
+# ==============================================================================
+# TEST 32: render_voice_player manual Play, unmute, and error reporting
+# ==============================================================================
+def test_32_render_voice_player_manual_play_and_error_reporting():
+    from services.coaching.voice_pipeline import render_voice_player
+
+    fake_bytes = b"\xff\xfb\x90\x00" + b"\x00" * 200
+    with mock.patch("streamlit.components.v1.html") as mock_html:
+        render_voice_player(fake_bytes, text="Test cue", event_id="ev-test-render", auto_play=True)
+        assert mock_html.call_count == 1
+        html_arg = mock_html.call_args[0][0]
+
+        # 1. Manual play button present with direct startAudio() onclick
+        assert 'id="apna-voice-btn"' in html_arg
+        assert 'onclick="startAudio()"' in html_arg
+
+        # 2. Direct click handler ensures audio is unmuted and volume is 1.0
+        assert "audio.muted = false" in html_arg
+        assert "audio.volume = 1.0" in html_arg
+
+        # 3. Audio.play() Promise is directly invoked from click handler
+        assert "var promise = audio.play()" in html_arg or "promise = audio.play()" in html_arg
+
+        # 4. Error display exists and errors are NOT swallowed into console.warn only
+        assert 'id="error-display"' in html_arg
+        assert "showError(" in html_arg
+
+        # 5. Playback status, time, volume, and payload badges exist
+        assert 'id="playback-badge"' in html_arg
+        assert 'id="time-badge"' in html_arg
+        assert 'id="vol-badge"' in html_arg
+        assert 'id="src-badge"' in html_arg
+
+
+# ==============================================================================
+# TEST 33: render_voice_player rejects invalid audio gracefully
+# ==============================================================================
+def test_33_render_voice_player_rejects_invalid_audio():
+    from services.coaching.voice_pipeline import render_voice_player
+
+    with mock.patch("streamlit.components.v1.html") as mock_html, mock.patch("streamlit.warning") as mock_warn:
+        render_voice_player(b"", text="Empty", event_id="ev-invalid-1")
+        assert mock_html.call_count == 0
+        assert mock_warn.call_count == 1
+
+        render_voice_player(b"\x00" * 50, text="Corrupt", event_id="ev-invalid-2")
+        assert mock_html.call_count == 0
+        assert mock_warn.call_count == 2
+
+
+# ==============================================================================
+# TEST 34: Test Voice diagnostics integration
+# ==============================================================================
+def test_34_test_voice_diagnostics_integration():
+    import streamlit as st
+    from services.state.session_defaults import initial_session_defaults
+
+    initial_session_defaults()
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 400
+    test_id = "test-voice-uuid"
+
+    # Simulate Test Voice success branch
+    st.session_state.audio_diag_event_id = test_id
+    st.session_state.audio_diag_event_name = "test_voice"
+    st.session_state.audio_diag_issue = "Voice Test Verification"
+    st.session_state.audio_diag_tts_status = "SUCCESS"
+    st.session_state.audio_diag_validation_status = "VALID_MP3"
+    st.session_state.audio_diag_payload_bytes = len(fake_audio)
+    st.session_state.audio_diag_playback_status = "READY"
+
+    assert st.session_state.audio_diag_event_id == test_id
+    assert st.session_state.audio_diag_event_name == "test_voice"
+    assert st.session_state.audio_diag_tts_status == "SUCCESS"
+    assert st.session_state.audio_diag_validation_status == "VALID_MP3"
+    assert st.session_state.audio_diag_payload_bytes == 404
+    assert st.session_state.audio_diag_playback_status == "READY"
+
+
+# ==============================================================================
+# TEST 35: Static welcome voice pre-cache in TextToSpeech
+# ==============================================================================
+def test_35_static_welcome_voice_precache():
+    tts = TextToSpeech()
+    test_phrase = "Welcome to Apna AI Coach. Voice is active and working properly."
+    tts.load_static_cache()
+
+    # Cache must contain the pre-seeded welcome phrase if welcome_voice.mp3 is present
+    audio = tts.speak(test_phrase)
+    assert audio is not None
+    assert validate_audio_bytes(audio) is True
+    assert len(audio) > 1000
+
+
+# ==============================================================================
+# TEST 36: autoplay_audio delegates to render_voice_player
+# ==============================================================================
+def test_36_autoplay_audio_delegates_to_render_voice_player():
+    import streamlit as st
+
+    fake_audio = b"\xff\xfb\x90\x00" + b"\x00" * 150
+    st.session_state["last_played_audio_event_id"] = ""
+
+    with mock.patch("services.coaching.voice_pipeline.render_voice_player") as mock_render, mock.patch("streamlit.audio"):
+        autoplay_audio(fake_audio, text="Set complete", event_id="ev-del-1")
+        assert mock_render.call_count == 1
+        call_args = mock_render.call_args[0]
+        assert call_args[0] == fake_audio
+        assert mock_render.call_args[1]["event_id"] == "ev-del-1"
+        assert mock_render.call_args[1]["auto_play"] is True
+

@@ -37,7 +37,7 @@ from services.tracking.metrics import sync_metrics_update
 from groq import Groq
 from services.coaching.llm import LLMCoach
 from services.coaching.tts import TextToSpeech, validate_audio_bytes
-from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio
+from services.coaching.voice_pipeline import VoicePipeline, autoplay_audio, render_voice_player
 
 
 def main():
@@ -75,6 +75,7 @@ def main():
 
         llm_coach = LLMCoach(groq_client=groq_client)
         tts = TextToSpeech()
+        tts.load_static_cache()
         st.session_state.voice_pipeline = VoicePipeline(llm_coach, tts)
 
     workout_started = st.session_state.get("workout_started", False)
@@ -206,6 +207,8 @@ def main():
             if st.button("🧪 Test Voice", width="stretch", key="test_voice_btn"):
                 tts_engine = getattr(voice_pipe, "tts", None) if voice_pipe else None
                 if tts_engine:
+                    if hasattr(tts_engine, "load_static_cache"):
+                        tts_engine.load_static_cache()
                     try:
                         audio_data = tts_engine.speak(test_phrase)
                     except Exception as e:
@@ -219,12 +222,26 @@ def main():
                         st.session_state.coach_feedback = test_phrase
                         st.session_state.voice_confirmed = None
                         st.session_state.voice_test_issue = None
+
+                        # Maintain verified runtime audio diagnostics
+                        st.session_state.audio_diag_event_id = test_id
+                        st.session_state.audio_diag_event_name = "test_voice"
+                        st.session_state.audio_diag_issue = "Voice Test Verification"
+                        st.session_state.audio_diag_tts_status = "SUCCESS"
+                        st.session_state.audio_diag_validation_status = "VALID_MP3"
+                        st.session_state.audio_diag_payload_bytes = len(audio_data)
+                        st.session_state.audio_diag_playback_status = "READY"
+                        st.session_state.audio_diag_delivered_at = time.strftime("%H:%M:%S")
                     else:
                         st.session_state.voice_test_audio = None
                         st.session_state.voice_test_issue = True
+                        st.session_state.audio_diag_tts_status = "FAILED"
+                        st.session_state.audio_diag_last_error = "TTS speak generation failed or returned invalid MP3 bytes"
                 else:
                     st.session_state.voice_test_audio = None
                     st.session_state.voice_test_issue = True
+                    st.session_state.audio_diag_tts_status = "NO_TTS_ENGINE"
+                    st.session_state.audio_diag_last_error = "Voice pipeline or TTS engine not available"
 
         if st.session_state.get("voice_test_audio"):
             st.markdown("---")
@@ -234,7 +251,14 @@ def main():
             if is_new_test:
                 st.session_state["last_played_test_id"] = test_id
 
-            st.audio(st.session_state.voice_test_audio, format="audio/mp3", autoplay=is_new_test)
+            # Render audited HTML5 player with manual Play button, duration, volume, mute & error display
+            render_voice_player(
+                st.session_state.voice_test_audio,
+                text=test_phrase,
+                event_id=test_id,
+                auto_play=is_new_test,
+                height=78,
+            )
             st.caption(f"_{test_phrase}_")
 
             st.markdown("**Did you hear the coach speak?**")

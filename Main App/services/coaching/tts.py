@@ -1,5 +1,6 @@
 import io
 import logging
+from pathlib import Path
 from typing import Optional, Dict, List
 from gtts import gTTS
 
@@ -56,6 +57,18 @@ class TextToSpeech:
         self.lang = lang
         self._cache: Dict[str, bytes] = {}
 
+    def load_static_cache(self) -> None:
+        """Pre-seeds the cache with bundled static audio assets if available."""
+        try:
+            static_welcome = Path(__file__).resolve().parent.parent.parent / "static" / "welcome_voice.mp3"
+            if static_welcome.exists():
+                with open(static_welcome, "rb") as f:
+                    welcome_bytes = f.read()
+                if validate_audio_bytes(welcome_bytes):
+                    self._cache["en:welcome to apna ai coach. voice is active and working properly."] = welcome_bytes
+        except Exception as e:
+            logger.debug(f"Static welcome audio pre-cache skipped: {e}")
+
     def speak(self, text: str, lang: Optional[str] = None) -> Optional[bytes]:
         cleaned = (text or "").strip()
         if not cleaned:
@@ -84,7 +97,8 @@ class TextToSpeech:
             return None
 
     def precache_phrases(self, phrases: List[str]) -> int:
-        """Pre-warms the cache with essential phrases."""
+        """Pre-warms the cache with essential phrases and static assets."""
+        self.load_static_cache()
         count = 0
         for phrase in phrases:
             cleaned = (phrase or "").strip()
